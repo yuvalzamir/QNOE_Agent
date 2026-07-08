@@ -168,15 +168,16 @@
 - [x] `audit_log` table ✅
 - [x] ~~Event logger + episodic context query~~ — **superseded by Mem0 (L3.5)**. `log_event` + `get_episodic_context` exist in `agent/episodic.py` but are wired to dead LangGraph code. Hermes handles cross-session recall via Mem0; within-session via rolling window. `audit_log` table still needed for Phase 2 write permissions — see T2–T4 items above.
 
-### L3.5 — Mem0 user memory *(new)*
-- [ ] `pip install mem0ai`
-- [ ] `episodic_memory` Qdrant collection created
-- [ ] `user_id` keyword index created on collection
-- [ ] Mem0 configured (local Qdrant + vLLM + nomic-embed)
-- [ ] `memory.search()` integrated into turn loop
-- [ ] `memory.add()` integrated into turn loop
-- [ ] Per-user isolation tested
-- [ ] Cross-session recall tested
+### L3.5 — Mem0 user memory *(built on branch `feature/mem0-per-user`; see ⏳ PENDING DEPLOY at top + [[MEM0_INTEGRATION]])*
+- [x] `pip install mem0ai` ✅ *(2.0.11 in hermes-venv, 2026-07-08 — note: downgraded protobuf 7→6)*
+- [x] `episodic_memory` Qdrant collection created ✅ *(768-dim)*
+- [x] `user_id` keyword index created on collection ✅
+- [x] Mem0 configured (local Qdrant + vLLM + nomic-embed) ✅ *(inside `qnoe_rag`, not a separate provider — avoids exclusive-slot conflict)*
+- [x] `memory.search()` integrated into turn loop ✅ *(`prefetch()`; mem0 2.x API: `filters={"user_id":..}`/`top_k=`)*
+- [x] `memory.add()` integrated into turn loop ✅ *(`sync_turn()`, backgrounded)*
+- [x] Per-user isolation tested ✅ *(validated offline — other user gets 0 results)*
+- [ ] Cross-session recall tested — **pending deploy** (needs vLLM/live agent)
+- [ ] **Deploy** (`deploy_mem0.sh`) + `add(infer=True)` LLM-distillation test — **pending vLLM window** (see top)
 
 ### L4 — Skill registry
 - [ ] Skill format spec + Python loader
