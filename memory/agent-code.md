@@ -101,12 +101,16 @@ Must use full path: `/opt/qnoe-agent/models/hermes-3-70b-awq`
 
 ## Nightly Report (agent/reporting/post_report.py)
 
-Sends the nightly maintenance report as a Teams DM after each nightly run. Already wired into `nightly_run.py` (2026-07-08).
+Sends the nightly maintenance report to a Teams channel after each nightly run. Already wired into `nightly_run.py` (2026-07-08). Switched from DM to channel on 2026-07-08.
 
 - **Input:** `/opt/qnoe-agent/logs/nightly_report.json` written by `nightly_run.py`
 - **Output:** Two Teams messages — HTML summary table + separate error/warnings detail message if any
+- **Delivery:** Channel (preferred) or DM (fallback)
+  - **Channel:** `REPORT_TEAM_ID` + `REPORT_CHANNEL_ID` → posts to `/teams/{id}/channels/{id}/messages`
+  - **DM fallback:** `REPORT_CHAT_ID` or `REPORT_TO_EMAIL` → posts to `/chats/{id}/messages`
+- **Current target:** "Agent Logs" channel in QNOE-Agent team
 - **Auth:** Same MSAL ROPC creds as SharePoint (`secrets/sharepoint.env`)
-- **Config:** `secrets/report.env` — set `REPORT_CHAT_ID` (preferred) or `REPORT_TO_EMAIL`
+- **Config:** `secrets/report.env`
 - **Dry-run:** `python -m agent.reporting.post_report --dry-run` prints HTML without sending
 
 ## SharePoint QCoDeS Ingestion (agent/ingest/ingest_sp_qcodes.py)

@@ -271,7 +271,7 @@
   - [ ] **Verify current full sync run completed** (started 2026-07-08) — check log, confirm `processed` count, no auth errors, points land in `group-wide` collection with `text-sparse` vectors (new points should have sparse since ingestion code was updated)
   - [ ] **After sync + backfill both done:** spot-check a SharePoint-sourced point in Qdrant to confirm it has both dense and `text-sparse` vectors: `GET /collections/group-wide/points/{id}`
   - [ ] **Run `ingest_sp_qcodes.py`** (one-time) after full SP sync completes — ingests QCoDeS `.db` files from SharePoint into `qcodes-runs`. See `memory/agent-code.md` for run command. Do NOT re-run after completion.
-- [x] **Nightly report → Teams DM** ✅ *(2026-07-08 — `agent/reporting/post_report.py` wired into nightly_run.py; sends HTML summary + error detail as Teams DM using same MSAL creds as SharePoint)*
+- [x] **Nightly report → Teams channel** ✅ *(2026-07-08 — `agent/reporting/post_report.py` wired into nightly_run.py; posts to "Agent Logs" channel in QNOE-Agent team. Supports channel (REPORT_TEAM_ID + REPORT_CHANNEL_ID) with DM fallback. Switched from DM to channel 2026-07-08.)*
 - [x] **I6 — QCoDeS run details & diff tools** ✅ *(2026-07-06)* — Added `qcodes_run_details` and `qcodes_run_diff` to `qnoe_qcodes` plugin. Both parse `description_json` in Python (not LLM) to extract swept/measured params with labels+units. Diff shows only_in_a / only_in_b / in_both for swept and measured separately. No CIFS access needed — queries `qcodes_registry` only. Deployed to `/opt/qnoe-agent/hermes/plugins/qnoe_qcodes/__init__.py`. Smoke tested against real registry (75,994 runs). **Needs service restart to activate.**
 
 ---

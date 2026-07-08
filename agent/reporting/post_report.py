@@ -1,11 +1,13 @@
-"""Send the nightly maintenance report as a Teams DM via Microsoft Graph API.
+"""Send the nightly maintenance report to a Teams channel via Microsoft Graph API.
 
 Reads /opt/qnoe-agent/logs/nightly_report.json written by nightly_run.py.
-Uses the existing bot credentials (Chat.ReadWrite + ChatMessage.Send) to send
-a 1-on-1 chat message from qnoe-agent to the configured recipient.
+Uses the existing bot credentials (ChannelMessage.Send) to post to the
+configured Teams channel.
 
 Configuration (via /opt/qnoe-agent/secrets/report.env or environment):
-  REPORT_TO_EMAIL   — recipient UPN, e.g. yuval.zamir@icfo.eu (required)
+  REPORT_TEAM_ID    — Teams team (group) ID
+  REPORT_CHANNEL_ID — Teams channel ID
+  (fallback: REPORT_CHAT_ID or REPORT_TO_EMAIL for DM delivery)
 
 Bot credentials are read from /opt/qnoe-agent/secrets/sharepoint.env
 (same account: SHAREPOINT_USERNAME / SHAREPOINT_PASSWORD).
@@ -112,6 +114,14 @@ def _send_chat_message(token: str, chat_id: str, html_body: str) -> None:
     h = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     body = {"body": {"contentType": "html", "content": html_body}}
     r = requests.post(f"{GRAPH}/chats/{chat_id}/messages", headers=h, json=body, timeout=15)
+    r.raise_for_status()
+
+
+def _send_channel_message(token: str, team_id: str, channel_id: str, html_body: str) -> None:
+    h = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    body = {"body": {"contentType": "html", "content": html_body}}
+    url = f"{GRAPH}/teams/{team_id}/channels/{channel_id}/messages"
+    r = requests.post(url, headers=h, json=body, timeout=15)
     r.raise_for_status()
 
 
@@ -241,7 +251,22 @@ def _build_errors_html(report: dict) -> str | None:
 def post_report(report: dict, secrets: dict) -> None:
     token = _authenticate(secrets)
 
-    # Use a pre-resolved chat ID if available (avoids User.ReadBasic.All requirement)
+    # Prefer channel delivery (REPORT_TEAM_ID + REPORT_CHANNEL_ID)
+    team_id = secrets.get("REPORT_TEAM_ID", "").strip()
+    channel_id = secrets.get("REPORT_CHANNEL_ID", "").strip()
+
+    if team_id and channel_id:
+        logger.info("Posting to channel: team=%s channel=%s", team_id, channel_id)
+        _send_channel_message(token, team_id, channel_id, _build_summary_html(report))
+        logger.info("Sent summary to channel")
+
+        errors_html = _build_errors_html(report)
+        if errors_html:
+            _send_channel_message(token, team_id, channel_id, errors_html)
+            logger.info("Sent error details to channel")
+        return
+
+    # Fallback: DM delivery
     chat_id = secrets.get("REPORT_CHAT_ID", "").strip()
     if chat_id:
         logger.info("Using stored chat ID: %s", chat_id)
@@ -249,7 +274,9 @@ def post_report(report: dict, secrets: dict) -> None:
         recipient = secrets.get("REPORT_TO_EMAIL", "") or secrets.get("REPORT_RECIPIENT_ID", "")
         if not recipient:
             raise ValueError(
-                "Set REPORT_CHAT_ID or REPORT_TO_EMAIL in /opt/qnoe-agent/secrets/report.env"
+                "Set REPORT_TEAM_ID + REPORT_CHANNEL_ID (channel) or "
+                "REPORT_CHAT_ID / REPORT_TO_EMAIL (DM) in "
+                "/opt/qnoe-agent/secrets/report.env"
             )
         bot_upn = _get_bot_upn(token)
         logger.info("Bot UPN: %s", bot_upn)
