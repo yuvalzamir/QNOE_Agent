@@ -255,33 +255,36 @@ def sync_turn(self, user_content, assistant_content, *, session_id="", messages=
 
 ---
 
-## 6. Config change — disable built-in memory (all 3 profiles)
+## 6. Config change — drop USER.md only, keep MEMORY.md (all 3 profiles)
 
-In each `hermes/profiles/qnoe-*/config.yaml` under `memory:`:
+**Verified 2026-07-08:** built-in memory is currently **ON**. The profile configs set only `memory: {provider: qnoe_rag}`, but `load_config` deep-merges `DEFAULT_CONFIG` (`config.py:883`) under them, and `DEFAULT_CONFIG` sets `memory_enabled: True` + `user_profile_enabled: True`. So both files are loaded and injected today. To change a flag we must set it **explicitly** in the profile config (the merge otherwise keeps the default `True`).
+
+Decision: **drop `USER.md`** (Mem0 replaces it, properly per-user) and **keep `MEMORY.md`** (static per-team seed content; not redundant with Mem0). In each `hermes/profiles/qnoe-*/config.yaml` under `memory:`:
 
 ```yaml
 memory:
-  provider: qnoe_rag        # unchanged — RAG + Mem0 both ride here
-  memory_enabled: false     # drop MEMORY.md
-  user_profile_enabled: false  # drop USER.md
+  provider: qnoe_rag           # unchanged — RAG + Mem0 both ride here
+  user_profile_enabled: false  # drop USER.md (Mem0 owns per-user now)
+  # memory_enabled: left at default True — MEMORY.md stays.
+  # To also drop MEMORY.md later, add: memory_enabled: false
 ```
 
-Do **not** run `hermes tools disable memory` — that also removes the memory tool ecosystem (known Hermes footgun). Use the config keys above; they turn off built-in memory while leaving `qnoe_rag` untouched.
+Do **not** run `hermes tools disable memory` — that also removes the memory tool ecosystem (known Hermes footgun). Use the config key above; it leaves `qnoe_rag` and `MEMORY.md` untouched.
 
 Profiles to edit: `qnoe-orchestrator`, `qnoe-qtm`, `qnoe-photocurrent` (and the other sub-profiles once they go live).
 
 ---
 
-## 7. Context budget impact
+## 7. Context budget impact (keep MEMORY.md, drop USER.md)
 
 | Change | Δ tokens/turn |
 |---|---|
-| Remove `MEMORY.md` | −~800 |
-| Remove `USER.md` | −~500 |
+| Keep `MEMORY.md` | 0 (unchanged) |
+| Remove `USER.md` | −~500 (cap; actual = current file size) |
 | Add Mem0 facts (top-3) | +~400 |
-| **Net** | **≈ −900** |
+| **Net** | **≈ −100** |
 
-We move *further* from the ~19.5K tool-calling cliff, not toward it. Mem0 facts are capped at `MEM0_TOP_K=3` to keep the injection bounded.
+Roughly token-neutral: dropping `USER.md` frees about what Mem0's facts cost. (The earlier −900 figure assumed dropping `MEMORY.md` too — that would add another ~−800 if you later choose it.) Mem0 facts are capped at `MEM0_TOP_K=3` to keep the injection bounded. The win here is **correctness** — true per-user memory — not context savings.
 
 ---
 
@@ -326,26 +329,33 @@ sudo systemctl restart qnoe-hermes.service   # confirm exact unit name first
 ## 10. Rollback
 
 - Fast: set env `MEM0_ENABLED=0` and restart — disables search+add, code stays.
-- Full: restore `memory_enabled: true` / `user_profile_enabled: true` in the 3 configs, revert `__init__.py`, restart.
+- Full: remove the `user_profile_enabled: false` line from the 3 configs (default `True` restores `USER.md`), revert `__init__.py`, restart.
 - Data: `episodic_memory` collection can be dropped without touching RAG collections.
 
 ---
 
-## 11. Open items / risks (resolve before/at deploy)
+## 11. Open items / risks
 
-1. **Confirm vLLM model id** for `MEM0_CONFIG.llm.model` (§3.4).
-2. **Verify Mem0 config schema** against the installed `mem0ai` version (§3.1).
-3. **HF offline / trust_remote_code** for Mem0's embedder (§4 warning) — the most likely thing to fail on first run.
-4. **`user_id` in `on_session_switch`** — confirm via runtime log; update `_session_users` there if present (§5.4).
-5. **`add()` LLM cost** under load — acceptable at ~1 concurrent user; revisit if scaling (§5.6).
-6. **Exact service unit name** for restart (§8).
+Resolved during the 2026-07-08 validation:
+- ✅ ~~Verify Mem0 config schema~~ — mem0ai **2.0.11** accepts it. Note the 2.x `search()` API (`filters=`/`top_k=`).
+- ✅ ~~HF offline / trust_remote_code embedder~~ — loads the local nomic offline.
+- ✅ ~~Store/retrieve + per-user isolation~~ — confirmed.
+
+Still open (at deploy / needs vLLM):
+1. **Confirm vLLM model id** for `MEM0_CONFIG.llm.model` (`curl localhost:8000/v1/models`) — needed for `add(infer=True)`. Override via `MEM0_LLM_MODEL` env if not `hermes-3-70b`.
+2. **`add(infer=True)` end-to-end** — LLM distillation path, untested (vLLM was down).
+3. **`user_id` in `on_session_switch`** — confirm via runtime log; update `_session_users` there if present (§5.4).
+4. **`add()` LLM cost** under load — acceptable at ~1 concurrent user; revisit if scaling (§5.6).
+5. **protobuf 7.35.1→6.33.6 downgrade** from the mem0ai install — watch agent logs on first restart (see verification table).
+6. **Service unit:** `qnoe-hermes.service` (was `failed` while vLLM down; expected to recover once vLLM is up).
 
 ---
 
 ## 12. Summary of the change set
 
-- Install `mem0ai` in `hermes-venv`.
-- Create Qdrant `episodic_memory` (768-dim) + `user_id` keyword index.
-- ~5 additive edits to `qnoe_rag/__init__.py` (constants, `_get_mem0`, `_format_facts`, `initialize`/user-map, `prefetch`, `sync_turn`).
-- 2 config keys (`memory_enabled: false`, `user_profile_enabled: false`) × 3 profiles.
-- Net context: **−~900 tok/turn**, and finally **true per-user memory**.
+- Install `mem0ai` in `hermes-venv`. ✅ done (2.0.11)
+- Create Qdrant `episodic_memory` (768-dim) + `user_id` keyword index. ✅ done
+- 6 additive edits to `qnoe_rag/__init__.py` (constants, `_get_mem0`, `_format_facts`, `__init__`/`initialize`/`_uid_for`, `prefetch`, `sync_turn`). ✅ committed on `feature/mem0-per-user`
+- 1 config key (`user_profile_enabled: false`) × 3 profiles — **staged, not applied** (`scripts/deploy_mem0.sh`).
+- Deploy plugin + config, start vLLM, restart `qnoe-hermes.service` — **pending vLLM window** (after SP sync).
+- Net context: **≈ −100 tok/turn**; the real win is **true per-user memory**.
