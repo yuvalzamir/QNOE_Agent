@@ -46,6 +46,9 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_EXTENSIONS = {".py", ".ipynb", ".md", ".rst", ".pdf", ".pptx", ".docx"}
 
+# Skip files inside dependency/cache directories — these are never lab content
+EXCLUDE_PATH_SUBSTRINGS = {".env/", "/venv/", "site-packages/", "node_modules/", "__pycache__/"}
+
 # Max seconds to spend chunking a single file (covers Docling PDF/DOCX/PPTX processing).
 FILE_CHUNK_TIMEOUT = int(os.environ.get("SP_FILE_CHUNK_TIMEOUT", "300"))
 
@@ -100,39 +103,68 @@ WATCHER_DB = os.environ.get("WATCHER_DB", "/opt/qnoe-agent/memory/watcher.db")
 
 def _listing_cache_path(drive_id: str) -> Path:
     safe = drive_id.replace("!", "_").replace("/", "_")[:50]
-    return LISTING_CACHE_DIR / f"{safe}.json"
+    return LISTING_CACHE_DIR / f"{safe}.jsonl"
 
 
-def _load_listing_cache(drive_id: str) -> "tuple[list, str] | None":
+def _check_listing_cache(drive_id: str) -> "tuple[str, float] | None":
+    """Return (delta_link, saved_at) if a valid cache exists, else None.
+
+    Does NOT load items — they are streamed on demand via _stream_listing_cache.
+    """
     p = _listing_cache_path(drive_id)
     if not p.exists():
         return None
     try:
-        data = json.loads(p.read_text())
-        age_h = (time.time() - data["saved_at"]) / 3600
+        with open(p) as f:
+            meta = json.loads(f.readline())
+        age_h = (time.time() - meta["saved_at"]) / 3600
         if age_h > LISTING_CACHE_MAX_AGE_H:
             logger.info("Listing cache expired (%.1fh old), re-listing", age_h)
             return None
-        logger.info(
-            "Loaded listing cache: %d items (%.1fh old)", len(data["items"]), age_h
-        )
-        return data["items"], data["delta_link"]
+        logger.info("Listing cache found (%.1fh old) — streaming items", age_h)
+        return meta["delta_link"], meta["saved_at"]
     except Exception as exc:
-        logger.warning("Could not read listing cache: %s", exc)
+        logger.warning("Could not read listing cache metadata: %s", exc)
         return None
 
 
 def _save_listing_cache(drive_id: str, items: list, delta_link: str) -> None:
+    """Write JSONL cache: metadata on line 1, one item per subsequent line."""
     try:
         LISTING_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        _listing_cache_path(drive_id).write_text(json.dumps({
-            "saved_at": time.time(),
-            "delta_link": delta_link,
-            "items": items,
-        }))
+        p = _listing_cache_path(drive_id)
+        with open(p, "w") as f:
+            f.write(json.dumps({"_meta": True, "delta_link": delta_link, "saved_at": time.time()}) + "\n")
+            for item in items:
+                f.write(json.dumps(item) + "\n")
         logger.info("Listing cache saved: %d items", len(items))
     except Exception as exc:
         logger.warning("Could not save listing cache: %s", exc)
+
+
+def _stream_listing_cache(drive_id: str, skip_files: int = 0):
+    """Generator: stream file items from JSONL cache one at a time.
+
+    Applies file/deleted filter and skip_files offset without loading all items.
+    """
+    p = _listing_cache_path(drive_id)
+    skipped = 0
+    with open(p) as f:
+        f.readline()  # skip metadata line
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if "file" not in item or "deleted" in item:
+                continue
+            if skipped < skip_files:
+                skipped += 1
+                continue
+            yield item
 
 
 def _clear_listing_cache(drive_id: str) -> None:
@@ -334,6 +366,8 @@ def _process_item(
     for excl in site_cfg.get("exclude_folders", []):
         if rel_path.startswith(excl.lstrip("/")):
             return False
+    if any(p in rel_path for p in EXCLUDE_PATH_SUBSTRINGS):
+        return False
 
     item_id = item["id"]
     etag = item.get("eTag", "")
@@ -441,9 +475,9 @@ def full_sync(site_cfg: dict, cfg: dict, token: str, skip_files: int = 0) -> dic
         logger.info("SP full sync: %s / %s", site_cfg["name"], drive_name)
 
         # Try listing cache first to skip the 15-min listing phase on restarts
-        cached = _load_listing_cache(drive_id)
-        if cached:
-            all_items, delta_link = cached
+        cached_meta = _check_listing_cache(drive_id)
+        if cached_meta:
+            delta_link, _ = cached_meta
         else:
             try:
                 token, token_ts = _fresh_token(cfg, token, token_ts)
@@ -453,14 +487,11 @@ def full_sync(site_cfg: dict, cfg: dict, token: str, skip_files: int = 0) -> dic
                 stats["errors"] += 1
                 continue
             _save_listing_cache(drive_id, all_items, delta_link)
+            del all_items  # free memory immediately — we stream from JSONL below
 
-        file_items = [i for i in all_items if "file" in i and "deleted" not in i]
-        if skip_files > 0:
-            logger.info("SP: skipping first %d files (resume mode)", skip_files)
-            file_items = file_items[skip_files:]
         logger.info(
-            "SP: %d items found in %s / %s (%d files to process)",
-            len(all_items), site_cfg["name"], drive_name, len(file_items),
+            "SP: streaming items for %s / %s (skip_files=%d)",
+            site_cfg["name"], drive_name, skip_files,
         )
 
         # Save delta baseline before processing — crash-safe
@@ -475,28 +506,46 @@ def full_sync(site_cfg: dict, cfg: dict, token: str, skip_files: int = 0) -> dic
         def _submit(item: dict) -> bool:
             return _process_item(item, site_cfg, drive_id, temp_dir, holder, client)
 
-        with _TPE(max_workers=THREAD_WORKERS) as pool:
-            futures = {pool.submit(_submit, item): item for item in file_items}
-            done = 0
-            for fut in as_completed(futures):
-                item = futures[fut]
+        # Bounded sliding-window submission: at most 2×workers futures in flight at once.
+        # This avoids holding all 500K+ items in memory as a futures dict.
+        MAX_QUEUED = THREAD_WORKERS * 2
+        pending: dict = {}
+        item_gen = _stream_listing_cache(drive_id, skip_files)
+        done = 0
+
+        def _fill_queue() -> None:
+            while len(pending) < MAX_QUEUED:
                 try:
-                    ok = fut.result()
-                    if ok:
-                        stats["processed"] += 1
-                    else:
-                        stats["skipped"] += 1
-                except Exception as exc:
-                    logger.error("SP item error for %s: %s", item.get("name", "?"), exc)
-                    stats["errors"] += 1
-                    stats["failed_files"].append(item.get("name", "unknown"))
-                done += 1
-                if done % 500 == 0:
-                    logger.info(
-                        "SP progress: %d/%d files — %d indexed, %d skipped, %d errors",
-                        done, len(file_items),
-                        stats["processed"], stats["skipped"], stats["errors"],
-                    )
+                    item = next(item_gen)
+                    fut = pool.submit(_submit, item)
+                    pending[fut] = item
+                except StopIteration:
+                    break
+
+        with _TPE(max_workers=THREAD_WORKERS) as pool:
+            _fill_queue()
+            while pending:
+                for fut in as_completed(pending):
+                    item = pending.pop(fut)
+                    try:
+                        ok = fut.result()
+                        if ok:
+                            stats["processed"] += 1
+                        else:
+                            stats["skipped"] += 1
+                    except Exception as exc:
+                        logger.error("SP item error for %s: %s", item.get("name", "?"), exc)
+                        stats["errors"] += 1
+                        stats["failed_files"].append(item.get("name", "unknown"))
+                    done += 1
+                    if done % 500 == 0:
+                        logger.info(
+                            "SP progress: %d files — %d indexed, %d skipped, %d errors",
+                            done + skip_files,
+                            stats["processed"], stats["skipped"], stats["errors"],
+                        )
+                    _fill_queue()
+                    break  # restart as_completed with updated pending dict
 
         _clear_listing_cache(drive_id)
 
