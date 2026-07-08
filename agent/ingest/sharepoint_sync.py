@@ -27,6 +27,7 @@ from concurrent.futures import (
 from datetime import datetime, timezone
 from pathlib import Path
 
+import psutil
 import yaml
 from qdrant_client import QdrantClient
 
@@ -53,7 +54,16 @@ EXCLUDE_PATH_SUBSTRINGS = {".env/", "/venv/", "site-packages/", "node_modules/",
 FILE_CHUNK_TIMEOUT = int(os.environ.get("SP_FILE_CHUNK_TIMEOUT", "300"))
 
 # Parallelism settings
-THREAD_WORKERS = int(os.environ.get("SP_THREAD_WORKERS", "4")) # concurrent download/embed threads
+THREAD_WORKERS = int(os.environ.get("SP_THREAD_WORKERS", "20"))  # concurrent download/embed threads
+
+# Memory guard: never submit new work if available RAM drops below this threshold.
+# Docling subprocesses fork from the parent and can spike 4-5 GB each on large PDFs.
+MIN_FREE_GB = float(os.environ.get("SP_MIN_FREE_GB", "20"))
+
+
+def _memory_ok() -> bool:
+    """Return True if available system RAM is above the safety floor."""
+    return psutil.virtual_memory().available / (1024 ** 3) >= MIN_FREE_GB
 
 # Listing cache: saves the full item list to disk so restarts skip the listing phase
 LISTING_CACHE_DIR = Path(os.environ.get("SP_LISTING_CACHE_DIR", "/tmp/qnoe-sp-listing-cache/"))
@@ -514,13 +524,16 @@ def full_sync(site_cfg: dict, cfg: dict, token: str, skip_files: int = 0) -> dic
         done = 0
 
         def _fill_queue() -> None:
-            while len(pending) < MAX_QUEUED:
+            while len(pending) < MAX_QUEUED and _memory_ok():
                 try:
                     item = next(item_gen)
                     fut = pool.submit(_submit, item)
                     pending[fut] = item
                 except StopIteration:
                     break
+            if not _memory_ok():
+                free_gb = psutil.virtual_memory().available / (1024 ** 3)
+                logger.warning("SP memory guard: %.1f GB free — throttling submissions", free_gb)
 
         with _TPE(max_workers=THREAD_WORKERS) as pool:
             _fill_queue()
