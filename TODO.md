@@ -1,7 +1,48 @@
 # QNOE Lab Agent — Master TODO
-*Last updated: 2026-07-08 — BM25 deployed, orphan cleanup fixed, nightly cron disabled tonight*
+*Last updated: 2026-07-08 — Mem0 per-user memory built + staged (pending vLLM window); BM25 deployed, orphan cleanup fixed, nightly cron disabled tonight*
 
 > Claude Code memory: [[HOME]] · Migration tracker: [[memory/hermes-migration]] · Decisions: [[memory/decisions]]
+
+---
+
+## ⏳ PENDING DEPLOY — Mem0 per-user memory
+
+**Status:** Built + validated on branch `feature/mem0-per-user` (4 commits). **NOT deployed.** Waiting on a vLLM window (vLLM is down for the SharePoint full sync; starting it now risks OOMing the sync). Full design: [[MEM0_INTEGRATION]] · decision [[memory/decisions#D13]].
+
+**What it does:** per-user long-term memory via the Mem0 library inside `qnoe_rag` (RAG stays the single injector). Drops `USER.md`, keeps `MEMORY.md`.
+
+**Already done (safe, additive):** `mem0ai` 2.0.11 installed in `hermes-venv`; Qdrant `episodic_memory` collection + `user_id` index created; validated offline (schema, embedder, write/read, per-user isolation).
+
+**How to deploy** — after the SP sync finishes, when vLLM can start safely:
+
+1. **Check artifacts are staged on the DGX** (re-`scp` if `/tmp` was cleared):
+   ```bash
+   ls -la /tmp/qnoe_rag_init.py /tmp/deploy_mem0.sh
+   # if missing, from the workstation:
+   #   scp hermes/plugins/qnoe_rag/__init__.py yzamir@10.3.8.21:/tmp/qnoe_rag_init.py
+   #   scp scripts/deploy_mem0.sh              yzamir@10.3.8.21:/tmp/deploy_mem0.sh
+   #   ssh … "sed -i 's/\r$//' /tmp/deploy_mem0.sh /tmp/qnoe_rag_init.py"
+   ```
+2. **Run the staged deploy** (deploys plugin + sets `user_profile_enabled: false` in the 3 profile configs; reversible, no restart):
+   ```bash
+   bash /tmp/deploy_mem0.sh
+   ```
+3. **Confirm the vLLM model id** for Mem0's fact-extraction LLM (open item):
+   ```bash
+   curl -s http://localhost:8000/v1/models     # if not "hermes-3-70b", set MEM0_LLM_MODEL
+   ```
+4. **Start vLLM, then restart the agent:**
+   ```bash
+   sudo systemctl start vllm.service           # ~5 min to load
+   sudo systemctl restart qnoe-hermes.service
+   ```
+5. **Verify** (details in [[MEM0_INTEGRATION]] §9): logs show `Initializing Mem0`; a stated preference lands in `episodic_memory`; next turn shows `## What I remember about you`; **user B does not see user A's fact**; tool calls still fire (watch the ~19.5K context cliff); watch for protobuf errors (mem0 downgraded protobuf 7→6).
+
+**Rollback:** `export MEM0_ENABLED=0` + restart (fast); or remove the `user_profile_enabled: false` line + `git checkout master -- hermes/plugins/qnoe_rag/__init__.py` + redeploy.
+
+**Still untested (needs vLLM):** `add(infer=True)` LLM distillation; live in-agent behavior.
+
+- [ ] **Deploy Mem0 per-user memory** — run `deploy_mem0.sh` + steps above once vLLM window is available
 
 ---
 
