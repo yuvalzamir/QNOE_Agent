@@ -1,5 +1,5 @@
 # Mistakes & Pitfalls
-*Last updated: 2026-07-03 (M26–M29 added — SharePoint integration)*
+*Last updated: 2026-07-08 (M32 added — empty/LFS files repeat every nightly run)*
 
 > Bugs fixed and hard-won technical lessons. Check here before debugging similar issues.
 > Related: [[memory/deploy-patterns]] · [[memory/infrastructure]] · [[SETUP_LOG]]
@@ -184,6 +184,40 @@
 **Root cause:** `authenticate()` is called once before `full_sync()`. MSAL ROPC tokens expire after 60 min. Large SharePoint drives (NOE-Group: 2h+ sync) exceed this.
 **Fix:** Added `_fresh_token()` helper called per-item in both `full_sync()` and `delta_sync()`. Refreshes when `time.monotonic()` elapsed > 45 min. On refresh failure, logs warning and continues with old token.
 **File:** `agent/ingest/sharepoint_sync.py`
+
+## M30 — `update_collection` cannot add new vector fields to existing collections
+
+**Symptom:** `update_collection(sparse_vectors_config={"text-sparse": SparseVectorParams(...)})` returns HTTP 400: `"Wrong input: Not existing vector name error: text-sparse"`.
+**Root cause:** Qdrant's PATCH `/collections/{name}` endpoint updates existing config (optimizers, HNSW, quantization) but does NOT add new vector fields. The error message is misleading — it's not saying text-sparse already exists; it's saying the PATCH operation doesn't know how to add a new sparse field.
+**Fix:** Use `client.create_vector_name(collection_name, vector_name, SparseVectorNameConfig(sparse=SparseVectorConfig()))` — this maps to a different Qdrant endpoint that adds a new vector field to an existing collection.
+**Note:** `SparseVectorNameConfig` (for `create_vector_name`) wraps a `SparseVectorConfig` — NOT `SparseVectorParams`. The two models have different fields. `SparseVectorParams` is only for `create_collection`'s `sparse_vectors_config` dict.
+**Files:** `agent/ingest/run_ingest.py::_add_sparse_to_collection`, `agent/indexing/backfill_sparse.py::_add_sparse_config`
+**qdrant-client version:** 1.18.0
+
+## M31 — fastembed model download blocked by HF_HUB_OFFLINE env var
+
+**Symptom (potential):** `fastembed` fails to load `Qdrant/bm25` model at runtime because `HF_HUB_OFFLINE=1` is set in `embed.py` via `os.environ.setdefault`.
+**Root cause:** `embed.py` sets `HF_HUB_OFFLINE=1` before any model loads, blocking all huggingface_hub downloads. fastembed 0.8 uses huggingface_hub for model downloads. If the model isn't cached yet, it fails silently or raises.
+**Fix:** Pre-download the model manually BEFORE the offline env var takes effect:
+```bash
+/opt/qnoe-agent/venv/bin/python3 -c "from fastembed import SparseTextEmbedding; SparseTextEmbedding(model_name='Qdrant/bm25')"
+/opt/qnoe-agent/hermes-venv/bin/python3 -c "from fastembed import SparseTextEmbedding; SparseTextEmbedding(model_name='Qdrant/bm25')"
+```
+**Cache location:** `~/.cache/fastembed/` (18 files, ~1MB total). Once cached, no internet access needed.
+**Lesson:** When adding a new fastembed model, always pre-download it on the DGX before deploying code that imports it.
+
+## M32 — Empty files and Git LFS pointers warned every nightly run
+
+**Symptom:** Nightly report repeatedly logs "Could not open PPTX … Package not found" and similar errors for the same files across multiple runs.
+**Root cause:** When `chunk_file` returns empty (0-byte file or Git LFS pointer), `_record_file` is never called, so the file never enters the manifest. Every subsequent run re-attempts it from scratch (hash check finds no entry → tries again → fails → no record → repeat).
+**Two specific cases found (2026-07-08):**
+- `photocurrent-highbias/Subgroups/.../PPT.pptx` — 0-byte git placeholder files
+- `Polaritons-On_Chip_FTIR/data/*/B*_Echar*.pptx` — 133-byte Git LFS pointer stubs (real file on LFS server, not pulled locally)
+**Fix:** Early detection in `ingest_directory` before `chunk_file` is called:
+1. `fsize == 0` → log INFO, `_record_file(... point_ids=[])`, skip
+2. `fsize < 200` AND DOCLING extension AND first 40 bytes start with `"version https://git-lfs"` → same
+Files are recorded in the manifest with empty `point_ids`, so they're skipped on all future runs until the file actually changes on disk (new hash).
+**File:** `agent/ingest/run_ingest.py` — inside `ingest_directory` loop, after hash check.
 
 ## M25 — Qdrant snapshot timestamp lacks timezone
 

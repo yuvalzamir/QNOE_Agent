@@ -28,10 +28,10 @@ from pathlib import Path
 from uuid import uuid4
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
+from qdrant_client.models import Distance, VectorParams, PointStruct, SparseVector, SparseVectorParams, SparseIndexParams
 
 from .splitter import chunk_file
-from .embed import embed_documents, VECTOR_DIM
+from .embed import embed_documents, embed_sparse, VECTOR_DIM
 from .excluded import find_prune_args
 
 logger = logging.getLogger(__name__)
@@ -106,8 +106,27 @@ def _ensure_collection(client: QdrantClient, collection: str) -> None:
         client.create_collection(
             collection_name=collection,
             vectors_config=VectorParams(size=VECTOR_DIM, distance=Distance.COSINE),
+            sparse_vectors_config={"text-sparse": SparseVectorParams(
+                index=SparseIndexParams(on_disk=False)
+            )},
         )
         logger.info("Created collection: %s", collection)
+
+
+def _add_sparse_to_collection(client: QdrantClient, collection: str) -> None:
+    """Add text-sparse vector field to an existing collection (idempotent)."""
+    from qdrant_client.models import SparseVectorNameConfig, SparseVectorConfig
+    info = client.get_collection(collection)
+    if info.config.params.sparse_vectors and "text-sparse" in info.config.params.sparse_vectors:
+        return  # already has sparse field
+    try:
+        client.create_vector_name(
+            collection_name=collection,
+            vector_name="text-sparse",
+            vector_name_config=SparseVectorNameConfig(sparse=SparseVectorConfig()),
+        )
+    except Exception as e:
+        logger.warning("Could not add sparse field to %s: %s", collection, e)
 
 
 def _delete_old_chunks(
@@ -134,20 +153,32 @@ def _delete_old_chunks(
 
 
 def _upsert_chunks(
-    client: QdrantClient, collection: str, chunks: list[dict], vectors: list[list[float]]
+    client: QdrantClient,
+    collection: str,
+    chunks: list[dict],
+    vectors: list[list[float]],
+    sparse_vecs: list,
 ) -> list[str]:
     point_ids = [str(uuid4()) for _ in chunks]
     for i in range(0, len(chunks), UPSERT_BATCH):
-        batch_ids = point_ids[i : i + UPSERT_BATCH]
-        batch_vecs = vectors[i : i + UPSERT_BATCH]
-        batch_chunks = chunks[i : i + UPSERT_BATCH]
-        client.upsert(
-            collection_name=collection,
-            points=[
-                PointStruct(id=pid, vector=vec, payload=chunk)
-                for pid, vec, chunk in zip(batch_ids, batch_vecs, batch_chunks)
-            ],
-        )
+        batch_slice = slice(i, i + UPSERT_BATCH)
+        points = [
+            PointStruct(
+                id=pid,
+                vector={
+                    "": vec,
+                    "text-sparse": SparseVector(
+                        indices=sv.indices.tolist(), values=sv.values.tolist()
+                    ),
+                },
+                payload=chunk,
+            )
+            for pid, vec, sv, chunk in zip(
+                point_ids[batch_slice], vectors[batch_slice],
+                sparse_vecs[batch_slice], chunks[batch_slice],
+            )
+        ]
+        client.upsert(collection_name=collection, points=points)
     return point_ids
 
 
@@ -244,6 +275,28 @@ def ingest_directory(
             skipped += 1
             continue
 
+        # Skip empty files and Git LFS pointers — record in manifest so they
+        # are not retried every night until the file actually changes on disk.
+        try:
+            fsize = path.stat().st_size
+        except OSError:
+            fsize = -1
+        if fsize == 0:
+            logger.info("Empty file, skipping: %s", path.name)
+            _record_file(conn, path, sha256, team, [])
+            skipped += 1
+            continue
+        if fsize < 200 and path.suffix.lower() in DOCLING_EXTENSIONS:
+            try:
+                first_line = path.read_bytes()[:40].decode("utf-8", errors="ignore")
+            except OSError:
+                first_line = ""
+            if first_line.startswith("version https://git-lfs"):
+                logger.info("Git LFS pointer, skipping: %s", path.name)
+                _record_file(conn, path, sha256, team, [])
+                skipped += 1
+                continue
+
         # Skip oversized Docling files (memory safety)
         if path.suffix.lower() in DOCLING_EXTENSIONS:
             try:
@@ -280,7 +333,8 @@ def ingest_directory(
 
         texts = [c["text"] for c in chunks]
         vectors = embed_documents(texts)
-        point_ids = _upsert_chunks(client, team, chunks, vectors)
+        sparse_vecs = embed_sparse(texts)
+        point_ids = _upsert_chunks(client, team, chunks, vectors, sparse_vecs)
         _record_file(conn, path, sha256, team, point_ids)
         total_chunks += len(chunks)
         logger.info("Indexed %s → %d chunks", path.name, len(chunks))
