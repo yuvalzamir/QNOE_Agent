@@ -465,7 +465,7 @@ def _fresh_token(cfg: dict, token: str, token_ts: float) -> tuple[str, float]:
     return token, token_ts
 
 
-def full_sync(site_cfg: dict, cfg: dict, token: str, skip_files: int = 0) -> dict:
+def full_sync(site_cfg: dict, cfg: dict, token: str, skip_files: int = 0, keep_cache: bool = False) -> dict:
     """Enumerate all items and index each one. Establishes/refreshes delta baseline.
 
     Uses the Graph delta endpoint for listing (single paginated stream) instead of
@@ -560,7 +560,10 @@ def full_sync(site_cfg: dict, cfg: dict, token: str, skip_files: int = 0) -> dic
                     _fill_queue()
                     break  # restart as_completed with updated pending dict
 
-        _clear_listing_cache(drive_id)
+        if not keep_cache:
+            _clear_listing_cache(drive_id)
+        else:
+            logger.info("SP listing cache retained for post-processing (keep_cache=True)")
 
     sp_conn.close()
     return stats
@@ -655,6 +658,10 @@ def main() -> None:
         "--skip-files", type=int, default=0, metavar="N",
         help="Skip the first N files in the listing (resume from a known position)",
     )
+    parser.add_argument(
+        "--keep-cache", action="store_true",
+        help="Retain JSONL listing cache after sync (for use by post-processing jobs like ingest_sp_qcodes)",
+    )
     args = parser.parse_args()
 
     cfg = load_sharepoint_config(args.config)
@@ -679,7 +686,7 @@ def main() -> None:
 
     for site in sites:
         if args.full:
-            stats = full_sync(site, cfg, token, skip_files=args.skip_files)
+            stats = full_sync(site, cfg, token, skip_files=args.skip_files, keep_cache=args.keep_cache)
         else:
             stats = delta_sync(site, cfg, token)
         logger.info("SP sync done for '%s': %s", site["name"], stats)
