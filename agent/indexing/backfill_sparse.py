@@ -107,7 +107,7 @@ def _backfill_collection(
             valid_ids, valid_texts = zip(*valid)
             sparse_embs = embed_sparse(list(valid_texts))
 
-            # Build update vectors list
+            # Build update vectors list — skip points where sparse embedding is empty
             update_vectors = [
                 {
                     "id": pid,
@@ -119,6 +119,7 @@ def _backfill_collection(
                     },
                 }
                 for pid, sv in zip(valid_ids, sparse_embs)
+                if len(sv.indices) > 0
             ]
 
             client.update_vectors(
