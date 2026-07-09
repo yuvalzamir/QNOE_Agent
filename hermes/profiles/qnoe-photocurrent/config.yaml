@@ -12,7 +12,9 @@ custom_providers:
 - name: vLLM-local
   base_url: http://localhost:8000/v1
 toolsets:
-- hermes-cli
+- file
+- terminal
+- clarify
 - qnoe-lab
 plugins:
   enabled:
