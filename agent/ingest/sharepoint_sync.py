@@ -73,9 +73,23 @@ def _chunk_file_safe(dest: Path, site_name: str) -> list:
     """Run chunk_file in a fresh isolated subprocess.
 
     One crash/timeout only affects this one file — no cascade to other threads.
+    Explicitly kills the worker process on timeout so shutdown(wait=True) never hangs.
     """
-    with _PPE(max_workers=1) as ex:
-        return ex.submit(chunk_file, dest, site_name).result(timeout=FILE_CHUNK_TIMEOUT)
+    ex = _PPE(max_workers=1)
+    try:
+        fut = ex.submit(chunk_file, dest, site_name)
+        try:
+            return fut.result(timeout=FILE_CHUNK_TIMEOUT)
+        except (_ChunkTimeout, Exception):
+            # Kill worker processes immediately — avoids shutdown(wait=True) blocking forever
+            for proc in getattr(ex, "_processes", {}).values():
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            raise
+    finally:
+        ex.shutdown(wait=False)
 
 class _SharedToken:
     """Thread-safe token holder that auto-refreshes before expiry."""
