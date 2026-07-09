@@ -74,12 +74,12 @@ Does NOT persist across reboots. Re-run after each restart. Prompts for ICFO pas
 ## Memory & Capacity
 
 - **Total unified memory:** 121GB (CPU+GPU shared — DGX Spark GB10)
-- **At rest (vLLM running):** ~120GB used — model weights ~40GB + KV cache ~40GB + OS/services ~40GB
+- **At rest (vLLM running):** ~117-120GB used — model weights ~40GB + KV pool ~67GB (fp8) + OS/services
 - **At rest (vLLM stopped):** ~5GB used
-- **64K context: NOT feasible** — would double KV cache requirement (~+40GB), system has no headroom
-- **Concurrent users:** technically yes (vLLM continuous batching, default max_num_seqs=256), but practically 1 user at a time. Single "who are you" takes 16–20s. Memory pressure means 2+ concurrent users cause queuing and slowdown.
+- **64K context: FEASIBLE (deployed 2026-07-09)** — the old "+40GB not feasible" note conflated *per-sequence* KV with the pre-allocated *pool*. The KV pool size is set by `gpu_memory_utilization`, NOT by `max_model_len`. Raising `max-model-len` to 65536 costs zero extra memory. Measured pool at 64K + `--kv-cache-dtype fp8`: **Available KV cache 67.4GB → ~471K KV tokens → 7.2× concurrency at full 64K** (fp16 would give ~232K tokens / 3.5×). See [[CONTEXT_PRESSURE_REPORT]] §3.
+- **Concurrent users:** ≥3 guaranteed at full 64K (fp8 pool = ~471K KV tokens; `--max-num-seqs 4`). Decode stays ~6 tok/s regardless (bandwidth-bound; batching amortizes weight streaming up to ~4 streams). Single "who are you" still ~16-20s.
 - **Embedding model memory:** nomic-embed tensors are evicted to swap under memory pressure (e.g. SharePoint digest running). Appears as slow "reload" even though lru_cache holds the object. Fix: dedicated embedding microservice (future work).
-- **vLLM startup:** `vllm serve /opt/qnoe-agent/models/hermes-3-70b-awq --host 0.0.0.0 --port 8000 --quantization awq_marlin --max-model-len 32768 --enable-auto-tool-choice --tool-call-parser hermes`
+- **vLLM startup (current, fp8/64K, 2026-07-09):** `vllm serve /opt/qnoe-agent/models/hermes-3-70b-awq --host 0.0.0.0 --port 8000 --quantization awq_marlin --max-model-len 65536 --kv-cache-dtype fp8 --max-num-seqs 4 --enable-auto-tool-choice --tool-call-parser hermes` (script `scripts/start_vllm.sh` also redirects stdout→`logs/vllm.log` since the service otherwise only logs to journald). fp8 KV benchmarked ≥ fp16 decode (6.11 vs 5.96 tok/s), tool-calling + quality intact.
 - **To free memory for large ingestion jobs:** `sudo systemctl stop vllm.service` (frees ~115GB). Restart: `sudo systemctl start vllm.service` (~5 min to load).
 
 ## SharePoint Integration

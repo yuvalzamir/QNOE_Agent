@@ -1426,3 +1426,27 @@ sudo systemctl start qnoe-agent
 2. **Profile dir permissions:** `/opt/qnoe-agent/hermes/profiles/qnoe-orchestrator/` is `0700/qnoe-ai` — `yzamir` user cannot run Hermes CLI directly. Tests 13–15 done via Teams instead.
 
 **M7.6 smoke test: COMPLETE (15/15 PASS)**
+
+---
+
+## 2026-07-09 — Context-pressure package, steps 1-3
+
+Executed [[CONTEXT_EXECUTION_PLAN]] (from [[CONTEXT_PRESSURE_REPORT]] §6). Branch `feature/context-pressure` off master.
+
+**Step 1 — vLLM 64K + fp8 KV + max-num-seqs 4 (DEPLOYED).**
+- `scripts/start_vllm.sh`: `--max-model-len 32768→65536`, added `--kv-cache-dtype fp8 --max-num-seqs 4`; also redirect stdout→`logs/vllm.log` (service otherwise only logs to journald, which is not readable by `yzamir`).
+- Benchmarked fp8 vs fp16 (3× decode each, temp 0): **fp8 6.11 tok/s vs fp16 5.96 tok/s** (fp8 = 102% of fp16, ≥90% gate PASS); tool-call probe returns valid structured `tool_calls` in both; physics quality smoke coherent (no garbling). **fp8 shipped.**
+- KV pool: fp8 **Available 67.4GB → 471,360 KV tokens → 7.19× concurrency @ 64K**; fp16 was 232,064 tokens / 3.54×. Both meet ≥3 users; fp8 doubles headroom.
+- Hermes `context_length: 32768→65536` in all 3 profiles (orchestrator, qtm, photocurrent). Compaction now ~48K (threshold 0.75). `enable_prefix_caching=True` confirmed (vLLM V1).
+- Agent restarted, healthy. **Teams round-trip NOT tested (cannot send Teams msgs) — human verification needed.**
+
+**Step 2 — tool-schema slimming (DEPLOYED).**
+- `toolsets: [hermes-cli, qnoe-lab]` → `[file, terminal, clarify, qnoe-lab]` (all 3 profiles). Verified core tools never defer (`_HERMES_CORE_TOOLS`); slimming via composition.
+- Core tool schemas **6,054 → 3,550 tok (−2,504)**, measured with real tokenizer via vLLM `/tokenize`. Resident tools 12→7: `read_file, write_file, patch, search_files, terminal, process, clarify`. Dropped: skills, `memory`, `execute_code`. Floor ~11,725 → ~9,200.
+- `hermes prompt-size` (ideal for floor) not runnable: profiles are 0700/qnoe-ai and `sudo -u qnoe-ai` is not in NOPASSWD; floor derived from measured tool delta.
+
+**Step 3 — Provence reranker (EVAL ONLY; gate FAILED; NOT deployed).**
+- Downloaded `naver/provence-reranker-debertav3-v1` @ `ef49e233` to `/home/yzamir/provence_dl` (1.74GB); installed `nltk` + `punkt_tab` in agent venv. Loaded OK under transformers 5.10.2.
+- Offline eval, 20 QNOE queries (vLLM stopped to free RAM, restarted after): **token reduction 72%** (1631→454 top-3 tok, PASS), **answer survival 20/20** (PASS), **cpu latency 32.5× cross-encoder** (~22s/query vs 0.67s, **FAIL** ≤2×). Provence 0.4B DeBERTa on the Spark CPU is too slow; also exceeds the RAG prefetch 10s join timeout. Per plan §3.2 AND-gate → STOP, no deploy. `qnoe_rag` unchanged. Full report: `logs/provence_eval.md`.
+
+**Not done (out of scope / gated):** Mem0 deploy, nightly cron re-enable, nightly SP task, steps 4-6. Leftovers on DGX: `/home/yzamir/provence_dl` (1.74GB, safe to delete), unused `nltk` in agent venv.

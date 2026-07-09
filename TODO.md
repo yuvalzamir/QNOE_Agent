@@ -1,7 +1,18 @@
 # QNOE Lab Agent — Master TODO
-*Last updated: 2026-07-08 — BM25 deployed, orphan cleanup fixed, nightly cron disabled tonight*
+*Last updated: 2026-07-09 — context-pressure package steps 1-3 executed (see below)*
 
 > Claude Code memory: [[HOME]] · Migration tracker: [[memory/hermes-migration]] · Decisions: [[memory/decisions]]
+
+---
+
+## Context-pressure package (executed 2026-07-09) — see [[CONTEXT_PRESSURE_REPORT]], [[CONTEXT_EXECUTION_PLAN]]
+
+- [x] **Step 1 — vLLM 64K + fp8 KV + max-num-seqs 4.** Deployed. `max-model-len 32768→65536`, `--kv-cache-dtype fp8`, `--max-num-seqs 4`. fp8 chosen over fp16 (decode 6.11 vs 5.96 tok/s; KV pool 471K vs 232K tokens; 7.2× vs 3.5× concurrency at 64K). `context_length: 65536` in all 3 profiles (compaction ~48K). ≥3-user requirement met.
+- [x] **Step 2 — Tool-schema slimming via toolset composition.** Deployed. `toolsets: [hermes-cli, qnoe-lab]` → `[file, terminal, clarify, qnoe-lab]` (all 3 profiles). Core schemas 6,054 → 3,550 tok (−2,504, measured). Floor ~11,725 → ~9,200.
+- [x] **Step 3 — Provence reranker eval.** Done; **gate FAILED on latency → NOT deployed.** 72% token reduction + 20/20 survival, but 32.5× cpu latency (~22s/query) on the Spark. qnoe_rag stays on cross-encoder. Fallback LLMLingua-2 is a user decision. Eval: `logs/provence_eval.md`.
+- [ ] **Mem0 deploy** (`deploy_mem0.sh`) — was waiting on the 64K vLLM window; window is now live. Still pending; user's call. OUT OF SCOPE of this run.
+- [ ] Re-enable nightly cron / nightly SharePoint task — OUT OF SCOPE of this run.
+- [ ] Steps 4-6 (prefix-caching verify [note: `enable_prefix_caching=True` confirmed in vLLM V1 startup log], re-measure 19.5K tool-calling cliff, gpt-oss-120b pilot) — not started.
 
 ---
 

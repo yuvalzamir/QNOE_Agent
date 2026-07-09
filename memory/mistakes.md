@@ -1,5 +1,5 @@
 # Mistakes & Pitfalls
-*Last updated: 2026-07-08 (M33-M34 added — migration audit findings)*
+*Last updated: 2026-07-09 (M35-M36 added — context-pressure package findings)*
 
 > Bugs fixed and hard-won technical lessons. Check here before debugging similar issues.
 > Related: [[memory/deploy-patterns]] · [[memory/infrastructure]] · [[SETUP_LOG]]
@@ -239,3 +239,17 @@ Files are recorded in the manifest with empty `point_ids`, so they're skipped on
 **Root cause:** Qdrant returns `creation_time` without timezone suffix (e.g., `2026-07-03T08:24:04`). Code does `.replace("Z", "+00:00")` but there's no `Z` to replace. `fromisoformat` returns naive datetime, compared against tz-aware `cutoff`.
 **Fix:** Added `if created.tzinfo is None: created = created.replace(tzinfo=timezone.utc)` after parsing.
 **File:** `/opt/qnoe-agent/agent/indexing/nightly_run.py` line ~80.
+
+## M35 — Provence reranker is too slow on the Spark CPU (32× cross-encoder)
+
+**Context:** Evaluated `naver/provence-reranker-debertav3-v1` (0.4B DeBERTa-v3, prune+rerank in one model) as a drop-in replacement for the cross-encoder reranker in `qnoe_rag`, to cut RAG injection tokens.
+**Finding:** Excellent quality (72% top-3 token reduction, 20/20 answer-keyword survival on 20 QNOE queries), but **CPU latency ~22s/query = 32.5× the cross-encoder's 0.67s**. The reranker runs on CPU because the GPU is fully occupied by vLLM. A 0.4B model doing ~20 forward passes/query (contexts split at Provence's 512-token limit) is inherently slow on the Spark's CPU.
+**Why it matters:** Beyond failing the ≤2× latency gate, `qnoe_rag`'s prefetch does `prefetch_thread.join(timeout=10)` — a 22s rerank would time out and return **empty RAG context every turn**, silently breaking retrieval.
+**Decision:** NOT deployed. `qnoe_rag` stays on `cross-encoder-msmarco`. Full eval in `logs/provence_eval.md`.
+**Lesson:** Any GPU-class reranker/compressor is a non-starter while the GPU is monopolized by a dense 70B on CPU-only inference for aux models. RAG token compression on this box needs either a genuinely tiny CPU model or the MoE model swap (frees GPU headroom). LLMLingua-2 is the noted fallback but is a fresh user decision.
+
+## M36 — Agent/vLLM logs go only to journald, which `yzamir` cannot read
+
+**Symptom:** Can't inspect vLLM startup KV-cache lines or the Hermes gateway's per-turn prompt/token/tool logs; `journalctl -u <svc>` shows "No entries" for `yzamir` (not in `adm`/`systemd-journal`), and `journalctl` is not in the NOPASSWD sudo list.
+**Workaround:** Redirect the service's stdout to a file in `scripts/start_vllm.sh` (`... > /opt/qnoe-agent/logs/vllm.log 2>&1`) — the service runs as `qnoe-ai` which can write `logs/`. For offline tool-schema/token measurement, call `model_tools.get_tool_definitions(enabled_toolsets=...)` directly from the venv and tokenize via vLLM's `/tokenize` endpoint (needs no profile access).
+**Related limitation:** `hermes prompt-size` (the proper floor tool) needs read access to the 0700/qnoe-ai profile dir; `sudo -u qnoe-ai` is not in NOPASSWD and a temp copy breaks on the profile's cyclic `plugins`/`.env` symlinks — so the fresh-session floor had to be *derived* from the measured tool-schema delta, not read directly.

@@ -120,13 +120,19 @@ One-time script to pull QCoDeS `.db` files from SharePoint and index them into `
 
 ## Active Toolsets & Context Budget (QTM profile, fresh session)
 
-| Component | Tokens |
-|---|---|
-| Tool schemas (12 active tools) | ~6,905 |
-| RAG prefetch (3 chunks) | ~3,600 |
-| QTM SOUL.md | ~720 |
-| Hermes framing | ~500 |
-| **Floor (empty history)** | **~11,725** |
+**Toolset composition (2026-07-09):** changed `toolsets: [hermes-cli, qnoe-lab]` → `toolsets: [file, terminal, clarify, qnoe-lab]` in all 3 profiles (Step 2 of the context-pressure package). Core tools can NEVER be deferred by Tool Search (`_HERMES_CORE_TOOLS` in `tools/tool_search.py`), so slimming goes via toolset *composition*, not deferral. Resident tools dropped **12 → 7**: now `read_file, write_file, patch, search_files, terminal, process, clarify`. Dropped (uncallable until re-added or wrapped as deferrable plugin tools): `skill_manage/skill_view/skills_list` (skills), `memory`, `execute_code`. The `memory` *tool* ≠ the `qnoe_rag` memory *provider* (separate, untouched).
+
+| Component | Before | After (2026-07-09) |
+|---|---|---|
+| Tool schemas (core) | ~6,054 (12 tools, real tokenizer) | **~3,550 (7 tools)** — measured via vLLM `/tokenize` |
+| RAG prefetch (3 chunks) | ~3,600 | ~3,600 (Provence swap evaluated + rejected — see below) |
+| QTM SOUL.md | ~720 | ~720 |
+| Hermes framing | ~500 | ~500 |
+| **Floor (empty history)** | **~11,725** | **~9,200** (−2,504 tool tokens) |
+
+Window raised 32K → 64K (`context_length: 65536`, compaction now ~48K at threshold 0.75).
+
+**RAG reranker:** stays **cross-encoder-msmarco** (cpu). Provence (`naver/provence-reranker-debertav3-v1`) was evaluated 2026-07-09 as a prune+rerank replacement: 72% top-3 token reduction, 20/20 answer survival, but **32.5× cpu latency (~22s/query)** on the Spark CPU — far over the ≤2× gate and past the RAG prefetch's 10s join timeout. **Not deployed.** Full eval: `logs/provence_eval.md`.
 
 **Disabled toolsets (all profiles):** `tts`, `session_search`, `todo`, `cronjob`, `delegation`, `image_gen`
 
