@@ -174,6 +174,7 @@
 - [ ] KùzuDB deployment
 - [ ] Entity extraction pipeline
 - [ ] Graph-augmented retrieval
+- [ ] **Design requirement (from the 2026-07-10 BSCCO awareness gap):** the entity graph must be **group-visible from every profile** (who-works-on-what: material → sub-team → runs → setups), while document *content* stays profile-scoped. This is the systematic fix for cross-team awareness — a QTM user asking about BSCCO gets "Superconductivity-team material, here are their registry runs, ask their agent for documents" instead of silence or confabulation. Interim shim until L5: optional ~100-token "group map" primer in SOULs (not yet added; user-provided ground truth needed). Related: [[PHASE2_BACKLOG]] B10.
 
 **Status:** Designed, not started
 
