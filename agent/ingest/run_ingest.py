@@ -257,6 +257,8 @@ def ingest_directory(
 
     total_chunks = 0
     skipped = 0
+    new_files = 0
+    updated_files = 0
 
     for path in files:
         try:
@@ -312,6 +314,15 @@ def ingest_directory(
                     pass
                 continue
 
+        # Track whether this is a new file or an update
+        is_new = conn.execute(
+            "SELECT 1 FROM index_manifest WHERE file_path = ?", (str(path),)
+        ).fetchone() is None
+        if is_new:
+            new_files += 1
+        else:
+            updated_files += 1
+
         # Delete old chunks from Qdrant before re-indexing
         _delete_old_chunks(client, conn, path, team)
 
@@ -340,8 +351,8 @@ def ingest_directory(
         logger.info("Indexed %s → %d chunks", path.name, len(chunks))
 
     logger.info(
-        "Done. Indexed %d chunks from %d files (%d skipped unchanged).",
-        total_chunks, len(files) - skipped, skipped,
+        "Done. Indexed %d chunks from %d files (%d new, %d updated, %d skipped unchanged).",
+        total_chunks, new_files + updated_files, new_files, updated_files, skipped,
     )
 
 

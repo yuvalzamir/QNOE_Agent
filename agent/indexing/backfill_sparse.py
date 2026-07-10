@@ -31,7 +31,7 @@ logging.basicConfig(
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
 AGENT_DATA_DIR = os.environ.get("AGENT_DATA_DIR", "/opt/qnoe-agent/memory")
 MANIFEST_DB = os.path.join(AGENT_DATA_DIR, "episodic.db")
-SCROLL_BATCH = 200  # points per scroll page
+SCROLL_BATCH = 50  # points per scroll page (sparse vectors are large — 200 exceeds Qdrant's 32MB limit)
 
 
 def _get_backfill_conn() -> sqlite3.Connection:
@@ -107,7 +107,7 @@ def _backfill_collection(
             valid_ids, valid_texts = zip(*valid)
             sparse_embs = embed_sparse(list(valid_texts))
 
-            # Build update vectors list
+            # Build update vectors list — skip points where sparse embedding is empty
             update_vectors = [
                 {
                     "id": pid,
@@ -119,6 +119,7 @@ def _backfill_collection(
                     },
                 }
                 for pid, sv in zip(valid_ids, sparse_embs)
+                if len(sv.indices) > 0
             ]
 
             client.update_vectors(

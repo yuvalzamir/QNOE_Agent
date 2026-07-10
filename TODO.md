@@ -1,5 +1,5 @@
 # QNOE Lab Agent — Master TODO
-*Last updated: 2026-07-09 — context-pressure package steps 1-3 executed (see below)*
+*Last updated: 2026-07-10 — gpt-oss-120b cutover DONE; Mem0 deployed + verified; context-pressure steps 1-5 closed*
 
 > Claude Code memory: [[HOME]] · Migration tracker: [[memory/hermes-migration]] · Decisions: [[memory/decisions]]
 
@@ -10,7 +10,8 @@
 - [x] **Step 1 — vLLM 64K + fp8 KV + max-num-seqs 4.** Deployed. `max-model-len 32768→65536`, `--kv-cache-dtype fp8`, `--max-num-seqs 4`. fp8 chosen over fp16 (decode 6.11 vs 5.96 tok/s; KV pool 471K vs 232K tokens; 7.2× vs 3.5× concurrency at 64K). `context_length: 65536` in all 3 profiles (compaction ~48K). ≥3-user requirement met.
 - [x] **Step 2 — Tool-schema slimming via toolset composition.** Deployed. `toolsets: [hermes-cli, qnoe-lab]` → `[file, terminal, clarify, qnoe-lab]` (all 3 profiles). Core schemas 6,054 → 3,550 tok (−2,504, measured). Floor ~11,725 → ~9,200.
 - [x] **Step 3 — Provence reranker eval.** Done; **gate FAILED on latency → NOT deployed.** 72% token reduction + 20/20 survival, but 32.5× cpu latency (~22s/query) on the Spark. qnoe_rag stays on cross-encoder. Fallback LLMLingua-2 is a user decision. Eval: `logs/provence_eval.md`.
-- [ ] **Mem0 deploy** (`deploy_mem0.sh`) — was waiting on the 64K vLLM window; window is now live. Still pending; user's call. OUT OF SCOPE of this run.
+- [x] **Mem0 deploy — DONE + LIVE-VERIFIED (2026-07-10).** Deployed via `deploy_mem0.sh`; recall verified end-to-end after the anon-uid fix (mistakes M45); extraction max_tokens 512→1536 for gpt-oss; per-turn injection logging added. Isolation check by a second user still pending.
+- [ ] **I9 — find_file Teams round-trip** (from D14, `qnoe_files` plugin, deployed 2026-07-10 by parallel session) — human verification pending.
 - [ ] Re-enable nightly cron / nightly SharePoint task — OUT OF SCOPE of this run.
 - [x] **Step 6 — gpt-oss-120b pilot → PRODUCTION CUTOVER (2026-07-10).** Pilot passed; cutover executed on branch `feature/gpt-oss-cutover`. Production `localhost:8000` now serves **gpt-oss-120b MXFP4 via llama.cpp** (unit `vllm.service` name kept, runs `scripts/start_llamacpp.sh`). 4×64K KV pool (non-unified), decode 46.6 tok/s, 3 concurrent @ 25.5 tok/s, all 6 gates passed. Hermes-3 retained as rollback. See [[memory/decisions#D15]], [[SETUP_LOG]], [[GPT_OSS_CUTOVER_PLAN]]. **Pending: human Teams round-trip verifications before merge to master.**
 - [ ] Steps 4-5 (prefix-caching verify [note: `enable_prefix_caching=True` confirmed in vLLM V1 startup log — re-verify under llama.cpp], re-measure tool-calling cliff [retired as prose-fallback, see [[memory/mistakes#M40]]]) — not started.

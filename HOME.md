@@ -1,5 +1,5 @@
 # HOME — Claude Code Memory Index
-*Last updated: 2026-07-03*
+*Last updated: 2026-07-08*
 
 > **Purpose:** Persistent memory for Claude Code working on the QNOE Lab Agent project.
 > Start every session here. Follow links to topic files as needed.
@@ -43,6 +43,7 @@
 | [[AGENT_FRAMEWORK]] | LangGraph design, system prompts, MVP scope |
 | [[MIGRATION_PLAN]] | Hermes Agent migration phases M1–M8 |
 | [[PHASE2_BACKLOG]] | Post-MVP features B1–B7 |
+| [[MEM0_INTEGRATION]] | Program to add per-user Mem0 memory inside `qnoe_rag` (see [[memory/decisions#D13]]) |
 | [[REPO_MAPPING]] | Repo → Qdrant collection mapping |
 | [[WATCHER_PLAN]] | SMB3 watcher daemon design |
 

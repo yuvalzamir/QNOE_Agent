@@ -83,21 +83,33 @@ class _CapturingHandler(logging.Handler):
 def _parse_ingest_stats(records: list[logging.LogRecord]) -> dict:
     """Extract indexing stats and failed files from captured log records."""
     files_indexed = chunks_added = files_failed = 0
+    new_files = updated_files = 0
     failed_files: list[str] = []
     for r in records:
         msg = r.getMessage()
-        m = re.search(r"Indexed (\d+) chunks from (\d+) files", msg)
+        # New format: "Done. Indexed N chunks from M files (A new, B updated, C skipped unchanged)."
+        m = re.search(r"Indexed (\d+) chunks from (\d+) files \((\d+) new, (\d+) updated", msg)
         if m:
             chunks_added += int(m.group(1))
             files_indexed += int(m.group(2))
+            new_files += int(m.group(3))
+            updated_files += int(m.group(4))
+        elif re.search(r"Indexed (\d+) chunks from (\d+) files", msg):
+            # Legacy format without new/updated breakdown
+            m2 = re.search(r"Indexed (\d+) chunks from (\d+) files", msg)
+            if m2:
+                chunks_added += int(m2.group(1))
+                files_indexed += int(m2.group(2))
         if r.levelno >= logging.WARNING:
             # "Could not open PPTX /path/to/file: ..."
-            m2 = re.search(r"(?:Could not open|failed for|error.*?)\s+(/\S+)", msg, re.I)
-            if m2:
-                failed_files.append(m2.group(1))
+            m3 = re.search(r"(?:Could not open|failed for|error.*?)\s+(/\S+)", msg, re.I)
+            if m3:
+                failed_files.append(m3.group(1))
                 files_failed += 1
     return {
         "files_indexed": files_indexed,
+        "new_files": new_files,
+        "updated_files": updated_files,
         "chunks_added": chunks_added,
         "files_failed": files_failed,
         "failed_files": failed_files,
@@ -235,6 +247,18 @@ def task_sync_sharepoint() -> None:
         site_stats = delta_sync(site, cfg, token)
         all_stats[site["name"]] = site_stats
         logger.info("SP nightly done for %s: %s", site["name"], site_stats)
+
+    # Safety net for the find_file tool: delta_sync writes web_url only for
+    # changed files, so backfill any manifest rows still missing it (from a
+    # crash, re-index, or the pre-web_url era). Cheap — only scans NULL rows.
+    try:
+        from agent.indexing.backfill_sp_weburl import backfill
+        bf_stats = backfill()
+        all_stats["web_url_backfill"] = bf_stats
+        logger.info("SP web_url backfill (nightly): %s", bf_stats)
+    except Exception as exc:
+        logger.warning("SP web_url backfill skipped: %s", exc)
+
     return all_stats
 
 
@@ -580,14 +604,20 @@ def _summarise_stats(task_name: str, stats: dict) -> str:
     if task_name == "task_qdrant_snapshot":
         return f"created {stats.get('snapshots_created', 0)}, pruned {stats.get('snapshots_pruned', 0)}"
     if task_name == "task_index_repos":
-        return (f"indexed {stats.get('files_indexed', 0)} files "
+        new = stats.get('new_files', 0)
+        upd = stats.get('updated_files', 0)
+        breakdown = f"{new} new, {upd} updated" if (new or upd) else f"{stats.get('files_indexed', 0)} files"
+        return (f"indexed {breakdown} "
                 f"(+{stats.get('chunks_added', 0)} chunks), "
                 f"{stats.get('files_failed', 0)} failed")
     if task_name == "task_sync_sharepoint":
         parts = []
         for site, s in stats.items():
             if isinstance(s, dict):
-                parts.append(f"{site}: {s.get('processed', 0)}✓ {s.get('errors', 0)}✗")
+                new = s.get('new', 0)
+                upd = s.get('updated', 0)
+                detail = f"{new}↑ {upd}✎" if (new or upd) else f"{s.get('processed', 0)}✓"
+                parts.append(f"{site}: {detail} del={s.get('deleted', 0)} err={s.get('errors', 0)}")
         return " | ".join(parts)
     if task_name == "task_scan_qcodes":
         return (f"{stats.get('dbs_found', 0)} DBs, "

@@ -1,5 +1,5 @@
 # Hermes Agent Migration
-*Last updated: 2026-07-03 — M1–M7.5 done, per-user profile routing COMPLETE*
+*Last updated: 2026-07-08 — Mem0 per-user memory designed (see [[MEM0_INTEGRATION]])*
 
 > Tracking migration from LangGraph to Hermes Agent v0.17.0.
 > Full plan: [[MIGRATION_PLAN]] · Comparison: [[HERMES_AGENT_COMPARISON]] · Decision: [[memory/decisions#D4 — Replace LangGraph with Hermes Agent]]
@@ -38,8 +38,8 @@ Each has `SOUL.md` + `MEMORY.md` in `hermes/profiles/<name>/`.
 ## Gotchas
 
 - CLI `-z` mode does NOT load profile SOUL.md. Gateway mode does (via `set_hermes_home_override`).
-- MEMORY.md + USER.md are per-profile (shared within sub-team), not per-user.
-- True per-user facts need a memory provider plugin (Mem0 or custom).
+- MEMORY.md + USER.md are per-profile (shared within sub-team), not per-user. **Decision D13: drop both** (`memory_enabled: false`, `user_profile_enabled: false`).
+- True per-user facts: **Mem0 library called inside `qnoe_rag`** (NOT as a provider — slot is taken by RAG). Designed in [[MEM0_INTEGRATION]], see [[memory/decisions#D13]]. `qnoe_rag` already has both hooks: `prefetch()` (inject) + `sync_turn()` (currently no-op → becomes `mem0.add()`). `user_id` available in `initialize()` kwargs.
 - Sessions (conversation history) are per-user via gateway.
 - **`tool_use_enforcement: auto` doesn't cover Hermes 3** — the hardcoded model list (`TOOL_USE_ENFORCEMENT_MODELS`) only includes GPT/Codex/Gemini/Qwen/etc. Must set `tool_use_enforcement: true` for Hermes 3 to produce structured tool calls instead of text.
 - **Context bloat degrades tool calling** — at 19.5K tokens, Hermes 3 stops producing structured tool_calls even with enforcement. At 359 tokens it works perfectly. Keep context lean.

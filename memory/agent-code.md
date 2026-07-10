@@ -1,5 +1,5 @@
 # Agent Code
-*Last updated: 2026-07-08*
+*Last updated: 2026-07-10 (find_file plugin: CIFS+SP file search)*
 
 > Agent source files, message flow, tools, and how the pieces connect.
 > Full guide: [[AGENT_CODE_GUIDE]] · Framework design: [[AGENT_FRAMEWORK]] · Migration audit: [[MIGRATION_AUDIT]]
@@ -15,6 +15,7 @@
 | `hermes/config/user_profiles.yaml` | Per-user → profile routing map |
 | `hermes/plugins/qnoe_rag/__init__.py` | Qdrant RAG memory provider (hybrid dense+BM25) |
 | `hermes/plugins/qnoe_qcodes/__init__.py` | QCoDeS registry tools (search, run_details, run_diff) |
+| `hermes/plugins/qnoe_files/__init__.py` | `find_file` — locate a file by name/path across CIFS + SharePoint (manifest-backed) |
 | `hermes/plugins/teams_polling/__init__.py` | Teams Graph API polling adapter |
 | `hermes/scripts/gateway_wrapper.py` | Plugin discovery bootstrap script |
 | `agent/reporting/post_report.py` | Nightly report → Teams DM |
@@ -63,6 +64,7 @@ Dead code moved 2026-07-08 during migration audit:
 - `qcodes_search(query?, sample?, experiment?, date_from?, date_to?, limit?)` — measurement registry
 - `qcodes_run_details(db_path, run_id)` — swept/measured parameter details
 - `qcodes_run_diff(db_path_a, run_id_a, db_path_b, run_id_b)` — compare two runs
+- `find_file(query, source?, limit?)` — locate a file by name/folder-path across CIFS + SharePoint. Pure local SQLite `LIKE` over ingestion manifests (NO live `find` — a full CIFS scan takes hours; NO Graph call). Backends: CIFS = `index_manifest.file_path` in `/home/yzamir/qnoe_server_data/episodic.db` (server) + `/opt/qnoe-agent/memory/episodic.db` (repos); SP = `sp_manifest.item_path`/`web_url` in `/opt/qnoe-agent/memory/sharepoint.db`. `source ∈ {all,cifs,sharepoint}`. Returns filesystem path (CIFS) or web URL (SP). Covers indexed files only. Configurable via `CIFS_MANIFEST_DBS` (`:`-separated), `SP_MANIFEST_DB`. Deployed + backfilled 2026-07-10.
 
 ### Path Validation
 - **Old LangGraph:** Code-enforced `ALLOWED_ROOTS` in `tools.py` (hard boundary)
@@ -141,3 +143,9 @@ Window raised 32K → 64K (`context_length: 65536`, compaction now ~48K at thres
 **Disabled toolsets (all profiles):** `tts`, `session_search`, `todo`, `cronjob`, `delegation`, `image_gen`
 
 **Note:** `process` cannot be individually disabled — shares `terminal` toolset with `terminal`.
+
+## Tool Search & Core Tools (verified in v0.17.0 source, 2026-07-09)
+
+- **Core tools NEVER defer.** `tools/tool_search.py`: everything in `toolsets._HERMES_CORE_TOOLS` is hard-excluded from deferral ("No exceptions"). With our profiles, `classify_tools()` shows **all 12 resident tools are core, 0 deferrable → Tool Search is a no-op** (only qnoe-lab plugin tools defer).
+- **Per-tool schema cost** (chars/4, QTM profile): terminal 1,419 · skill_manage 1,040 · memory 694 · execute_code 604 · clarify 490 · patch 482 · search_files 446 · process 318 · write_file 288 · read_file 262 · skill_view 232 · skills_list 76 = **~6,351 tok, 100% core**.
+- **The slimming lever is toolset *composition*:** profile `toolsets:` feeds `get_tool_definitions(enabled_toolsets=…)`; basic toolsets exist (`file` 1,478 · `terminal` 1,737 · `skills` 1,348 · `memory` 694 · `code_execution` 604 · `clarify` 490). Planned: `toolsets: [file, terminal, clarify, qnoe-lab]` → ~3.7K (see [[CONTEXT_EXECUTION_PLAN]] §2). No config knob disables *individual* core tools (`platform_toolsets` is toolset-level too). Wrapper fallback: re-expose a dropped core capability as a plugin tool — plugin tools ARE deferrable.

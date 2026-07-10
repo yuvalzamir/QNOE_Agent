@@ -73,9 +73,23 @@ def _chunk_file_safe(dest: Path, site_name: str) -> list:
     """Run chunk_file in a fresh isolated subprocess.
 
     One crash/timeout only affects this one file — no cascade to other threads.
+    Explicitly kills the worker process on timeout so shutdown(wait=True) never hangs.
     """
-    with _PPE(max_workers=1) as ex:
-        return ex.submit(chunk_file, dest, site_name).result(timeout=FILE_CHUNK_TIMEOUT)
+    ex = _PPE(max_workers=1)
+    try:
+        fut = ex.submit(chunk_file, dest, site_name)
+        try:
+            return fut.result(timeout=FILE_CHUNK_TIMEOUT)
+        except (_ChunkTimeout, Exception):
+            # Kill worker processes immediately — avoids shutdown(wait=True) blocking forever
+            for proc in getattr(ex, "_processes", {}).values():
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            raise
+    finally:
+        ex.shutdown(wait=False)
 
 class _SharedToken:
     """Thread-safe token holder that auto-refreshes before expiry."""
@@ -207,9 +221,17 @@ def _get_sp_manifest_conn() -> sqlite3.Connection:
             etag         TEXT NOT NULL,
             collection   TEXT NOT NULL,
             point_ids    TEXT NOT NULL,
+            web_url      TEXT,
             indexed_at   TEXT NOT NULL
         )
     """)
+    # Migration: add web_url to manifests created before the find_file tool.
+    # (CREATE TABLE IF NOT EXISTS is a no-op on an existing table, so the
+    # column must be added explicitly. Backfill existing rows separately via
+    # agent.indexing.backfill_sp_weburl.)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(sp_manifest)")}
+    if "web_url" not in cols:
+        conn.execute("ALTER TABLE sp_manifest ADD COLUMN web_url TEXT")
     conn.commit()
     return conn
 
@@ -230,13 +252,15 @@ def _record_item(
     etag: str,
     collection: str,
     point_ids: list[str],
+    web_url: str = "",
 ) -> None:
     now = datetime.now(timezone.utc).isoformat()
     sp_conn.execute(
         """INSERT OR REPLACE INTO sp_manifest
-           (item_id, item_path, site_name, drive_id, etag, collection, point_ids, indexed_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (item_id, item_path, site_name, drive_id, etag, collection, json.dumps(point_ids), now),
+           (item_id, item_path, site_name, drive_id, etag, collection, point_ids, web_url, indexed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (item_id, item_path, site_name, drive_id, etag, collection,
+         json.dumps(point_ids), web_url, now),
     )
     sp_conn.commit()
 
@@ -415,7 +439,7 @@ def _process_item(
         point_ids = _upsert_chunks(client, collection, chunks, vectors, sparse_vecs)
         _record_item(
             sp_conn, item_id, rel_path, site_cfg["name"],
-            drive_id, etag, collection, point_ids,
+            drive_id, etag, collection, point_ids, web_url,
         )
         logger.info("SP indexed: %s → %d chunks", rel_path, len(chunks))
         return True
@@ -465,7 +489,7 @@ def _fresh_token(cfg: dict, token: str, token_ts: float) -> tuple[str, float]:
     return token, token_ts
 
 
-def full_sync(site_cfg: dict, cfg: dict, token: str, skip_files: int = 0) -> dict:
+def full_sync(site_cfg: dict, cfg: dict, token: str, skip_files: int = 0, keep_cache: bool = False) -> dict:
     """Enumerate all items and index each one. Establishes/refreshes delta baseline.
 
     Uses the Graph delta endpoint for listing (single paginated stream) instead of
@@ -560,7 +584,10 @@ def full_sync(site_cfg: dict, cfg: dict, token: str, skip_files: int = 0) -> dic
                     _fill_queue()
                     break  # restart as_completed with updated pending dict
 
-        _clear_listing_cache(drive_id)
+        if not keep_cache:
+            _clear_listing_cache(drive_id)
+        else:
+            logger.info("SP listing cache retained for post-processing (keep_cache=True)")
 
     sp_conn.close()
     return stats
@@ -575,7 +602,7 @@ def delta_sync(site_cfg: dict, cfg: dict, token: str) -> dict:
     client = QdrantClient(url=QDRANT_URL)
     sp_conn = _get_sp_manifest_conn()
     temp_dir = Path(cfg.get("temp_dir", "/tmp/qnoe-sharepoint/"))
-    stats: dict = {"processed": 0, "skipped": 0, "deleted": 0, "errors": 0, "failed_files": []}
+    stats: dict = {"processed": 0, "new": 0, "updated": 0, "skipped": 0, "deleted": 0, "errors": 0, "failed_files": []}
 
     token_ts = time.monotonic()
     drive_map = _resolve_drive_ids(site_cfg, token)
@@ -613,10 +640,17 @@ def delta_sync(site_cfg: dict, cfg: dict, token: str) -> dict:
             if "file" not in item:
                 continue
             token, token_ts = _fresh_token(cfg, token, token_ts)
+            is_new_item = sp_conn.execute(
+                "SELECT 1 FROM sp_manifest WHERE item_id = ?", (item["id"],)
+            ).fetchone() is None
             try:
                 ok = _process_item(item, site_cfg, drive_id, temp_dir, token, client, sp_conn)
                 if ok:
                     stats["processed"] += 1
+                    if is_new_item:
+                        stats["new"] += 1
+                    else:
+                        stats["updated"] += 1
                 else:
                     stats["skipped"] += 1
             except Exception as exc:
@@ -655,6 +689,10 @@ def main() -> None:
         "--skip-files", type=int, default=0, metavar="N",
         help="Skip the first N files in the listing (resume from a known position)",
     )
+    parser.add_argument(
+        "--keep-cache", action="store_true",
+        help="Retain JSONL listing cache after sync (for use by post-processing jobs like ingest_sp_qcodes)",
+    )
     args = parser.parse_args()
 
     cfg = load_sharepoint_config(args.config)
@@ -679,7 +717,7 @@ def main() -> None:
 
     for site in sites:
         if args.full:
-            stats = full_sync(site, cfg, token, skip_files=args.skip_files)
+            stats = full_sync(site, cfg, token, skip_files=args.skip_files, keep_cache=args.keep_cache)
         else:
             stats = delta_sync(site, cfg, token)
         logger.info("SP sync done for '%s': %s", site["name"], stats)

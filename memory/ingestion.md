@@ -1,5 +1,5 @@
 # Ingestion & RAG Pipeline
-*Last updated: 2026-07-03 (SharePoint pipeline added)*
+*Last updated: 2026-07-10 (web_url + backfill for find_file; group-wide health audit)*
 
 > File discovery, chunking, embedding, Qdrant indexing, watcher daemon, QCoDeS scanner.
 > Watcher design: [[WATCHER_PLAN]] · Repo mapping: [[REPO_MAPPING]] · Memory design: [[INFERENCE_MEMORY]]
@@ -23,7 +23,12 @@ Docling used for PDF/DOCX/PPTX (50MB cap). Oversized files logged to `/tmp/overs
 `agent/ingest/excluded.py` reads `config/watcher.yaml` → `find_prune_args()`.
 All `find` commands (run_ingest, qcodes_scanner) use this function.
 
-Excluded folders: QDphotodetector, TopoNanop, HighQuality_Plamons, Low_temperature_polaritons, mid-IR_Plasmonic_detector_Seb, Graphene Optomechanics.
+Excluded folders: QDphotodetector, TopoNanop, HighQuality_Plamons, Low_temperature_polaritons, mid-IR_Plasmonic_detector_Seb, Graphene Optomechanics, `Personal/Sergi/QTM - Copy` (bundled Python env).
+
+**Path substring exclusions** (`exclude_path_substrings` in watcher.yaml, applied via `find ! -path` in `_targeted_find`):
+`/PyInstaller/`, `/_pyinstaller/`, `/venv/`, `/.venv/`, `/site-packages/`, `/node_modules/`, `/__pycache__/`, `/.ipynb_checkpoints/`
+
+**Parallel change queue runner** (`/tmp/parallel_queue.py`): 6-worker ProcessPoolExecutor, runtime path filter matching same exclusions, `mark_processed` called after all workers complete. Use when change queue has large backlog (e.g. after manifest DB reset). Command: `cd /opt/qnoe-agent && N_WORKERS=6 setsid bash -c 'nohup venv/bin/python /tmp/parallel_queue.py >> logs/parallel_queue.log 2>&1' > /dev/null &`
 
 ## Qdrant Collections
 
@@ -68,6 +73,21 @@ Files: `agent/ingest/sharepoint_client.py` (Graph API wrapper), `agent/ingest/sh
 **First run timing:** Full listing of 2429-item drive takes ~2.5 min. Docling PDFs 30s–3min each. NOE-Group is larger — expect 2–4h total first sync.
 
 **Orphan cleanup:** `sweep_orphans()` in `run_ingest.py` only covers `index_manifest`. SP chunks tracked via `sp_manifest` — no orphan sweep yet (future work).
+
+**`web_url` column (2026-07-10, for `find_file` tool):** `sp_manifest` now stores the SharePoint web link. `_record_item()` writes it on every delta/full sync (auto-migrates via `PRAGMA`/`ALTER` in `_get_sp_manifest_conn`). Existing 22,102 rows backfilled from Qdrant chunk payloads (`source` field) by `agent/indexing/backfill_sp_weburl.py` — idempotent, only touches `web_url IS NULL/''`, batched `client.retrieve` per collection. Wired into nightly `task_sync_sharepoint` as a safety net (runs AFTER the sites loop → skipped if SP auth fails that night; the one-time backfill already made the manifest 100% complete).
+
+**Nightly SP creds — ANALYZED 2026-07-10, already fixed (no action needed):** older nightly `task_sync_sharepoint` called `authenticate()` without loading the secrets file, so it failed under cron (`Missing credentials`, traceback at old `nightly_run.py:154`) — the cron runs as `yzamir`, whose env lacks `SHAREPOINT_USERNAME/PASSWORD`. The current code loads `/opt/qnoe-agent/secrets/sharepoint.env` (640 qnoe-ai:qnoe-ai; `yzamir` reads it via the qnoe-ai group) via `os.environ.setdefault` before auth. Log confirms the 3 failures were on the OLD code; the last 2 runs (incl. Jul 10 02:01 cron) returned `OK` (processed=0 is normal — the 30-min poller already advanced the shared delta link). Replaying the loader as `yzamir` sets both vars non-empty. Residual brittleness only: creds depend on that one file + in-code parse (rotate/move breaks it), and the new web_url backfill sits *after* `authenticate()` so it's skipped on any night auth fails.
+
+## Collection health audit — group-wide growth & SP duplicates (2026-07-10)
+
+Triggered by a health-check flag: `group-wide` grew ~634K (07-09 BM25 snapshot) → **1,060,398** points, and the question was whether the web_url work duplicated content.
+
+- **web_url backfill is NOT the cause — it adds zero Qdrant points.** `backfill_sp_weburl.py` does read-only `client.retrieve` + a SQLite `UPDATE`. SP payloads already carried the URL in `source` (that's what it copies *from*), so the "old points without URLs / new with" framing doesn't apply.
+- **The +426K is legitimate SharePoint content**, not my change. `sp_manifest` (22,102 files) owns **406,848** chunks (noe-group 405,274 · twisted-materials 1,574) — ~= the growth. The 634K baseline was measured before the big SP full sync finished landing.
+- **No large-scale duplication.** Method: manifest `point_ids` are the *authoritative current* SP ids; any SP point in Qdrant not in that set = an orphaned duplicate. Sampled 120K points (Qdrant scrolls in ~random UUID order): 45,844 SP points, only **94 orphans = 0.2%** (a re-add-without-delete would be ~50%). SP ingest upserts correctly (`_process_item` → `_delete_old_chunks` by stored ids → `_upsert_chunks`, keyed by `item_id`). BM25 stats not meaningfully skewed.
+- The 2,682 `(source,start_line)` collisions in the sample are **not** dup pairs — both members are in the current manifest; they're multiple current chunks of one file sharing a `start_line` (page-relative offsets / text-vs-table). Benign.
+- **Payload fields:** `text, source, repo, chunk_type, start_line`. **No payload indexes** (`payload_schema: []`) → exact `count` with a `repo` filter hits Qdrant's 60s server-side timeout. A `repo` payload index would make health-check counts instant (candidate follow-up, not done). SP source = web URL (`http…`); CIFS/server source = filesystem path, repo like `server/Notebook`.
+- Residual: ~0.2% SP orphans (~800 points extrapolated) — trivial; would be cleared by the not-yet-built SP orphan sweep (see above).
 
 ## Nightly Tasks
 

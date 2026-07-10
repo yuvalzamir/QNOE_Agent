@@ -1,5 +1,5 @@
 # Decisions Log
-*Last updated: 2026-07-06*
+*Last updated: 2026-07-10*
 
 > Architectural and design decisions with reasoning. Append new entries at the bottom.
 > Related: [[memory/mistakes]] · [[HANDOFF#All design decisions — summary]]
@@ -94,6 +94,31 @@
 **Context:** Hermes 3 70B outputs tool calls as plain text (e.g., `read_file(path="...")`) instead of structured JSON tool_calls. This makes the agent unable to use any tools (file read, RAG search, QCoDeS query). vLLM's `--tool-call-parser hermes` works perfectly with minimal context (359 tokens → structured tool call) but fails at 19.5K tokens.
 **Decision:** Set `agent.tool_use_enforcement: true` in config.yaml (was `auto`).
 **Reasoning:** The `auto` setting only injects tool-use guidance for GPT/Codex/Gemini/Qwen/DeepSeek/Grok — Hermes 3 is not in the list (`TOOL_USE_ENFORCEMENT_MODELS` in `prompt_builder.py:275`). Setting `true` forces the guidance for all models. This is safe — the guidance just tells the model to use tools instead of describing actions.
+
+## D13 — Per-user memory via Mem0 library inside `qnoe_rag` (drop built-in MEMORY.md/USER.md)
+
+**Date:** 2026-07-08
+**Status:** DESIGNED, not yet implemented. Full program: [[MEM0_INTEGRATION]].
+**Context:** Want per-*user* persistent memory (preferences, working style) across sessions. Hermes's built-in `USER.md` is per-*profile* (shared across a whole sub-team), so it cannot isolate per person. `MEMORY.md` (agent env/diary notes) is low-value for a lab RAG assistant. Also tight on context vs the ~19.5K tool-calling cliff ([[memory/decisions#D11]]).
+**Decision:**
+- Drop `USER.md` only: `user_profile_enabled: false` in all profile `config.yaml` files. **Keep `MEMORY.md`** (per-team static seed content; not redundant with per-user Mem0). Built-in memory is currently ON — profile configs set only `memory: {provider: qnoe_rag}` but `load_config` deep-merges `DEFAULT_CONFIG` (`memory_enabled/user_profile_enabled: True`), so a flag must be set **explicitly** to change it. (Do NOT run `hermes tools disable memory` — that kills the memory tool ecosystem.)
+- Add per-user memory by calling the **Mem0 library** (`mem0ai`, oss/self-hosted mode) **from inside the existing `qnoe_rag` memory provider** — NOT as a Hermes `memory.provider` (only one allowed, `qnoe_rag` holds it).
+- `qnoe_rag` stays the single injector: `prefetch()` emits Mem0 facts (`## What I remember about you`, top-3) ahead of RAG chunks; the previously no-op `sync_turn()` runs a backgrounded `mem0.add()`.
+- Mem0 keyed on platform `user_id` (available in `initialize()` kwargs); dedicated Qdrant `episodic_memory` collection (768-dim); LLM = vLLM, embedder = local nomic.
+**Reasoning:** Library-inside-provider avoids the exclusive-provider conflict with RAG and needs no custom memory logic (Mem0 owns fact extraction/dedup/storage). Net context ≈ **−100 tok/turn** (keep MEMORY.md, −500 USER.md +400 Mem0 facts) — the win is correctness (true per-user memory), not tokens. See [[MEM0_INTEGRATION]].
+**Status update (2026-07-08):** Implemented on branch `feature/mem0-per-user` (2 commits). Validated on DGX without vLLM: mem0ai **2.0.11** installed (additive; note protobuf 7→6 downgrade), `episodic_memory` collection created, config schema + offline embedder + write/read round-trip + per-user isolation all confirmed. mem0 2.x `search()` needs `filters={"user_id":..}`/`top_k=` (code fixed). Deploy staged in `scripts/deploy_mem0.sh` — NOT applied; pending a vLLM window after the SharePoint full sync. Remaining: `add(infer=True)` LLM test + live deploy/restart.
+
+## D14 — `find_file`: unified CIFS + SharePoint file search over ingestion manifests (not live find / Graph)
+
+**Date:** 2026-07-10
+**Context:** Users need to locate a file by name/path. The agent could `find` on the CIFS mount, but SharePoint files never touch the filesystem (streamed → embedded → deleted), so they were unfindable by name. Wanted one tool covering both stores.
+**Decision:** New `qnoe_files` plugin exposing `find_file(query, source?, limit?)` that runs **local SQLite `LIKE` queries over the ingestion manifests** — `index_manifest.file_path` (CIFS: server + repo `episodic.db`) and `sp_manifest.item_path`/`web_url` (SharePoint) — and merges results. `source ∈ {all,cifs,sharepoint}`; returns a filesystem path (CIFS) or web URL (SharePoint).
+**Rejected alternatives:**
+- **Live `find` over CIFS** — a full-mount scan takes hours (per [[memory/ingestion#QCoDeS Scanner]]); unusable for an interactive tool.
+- **Live Graph Search API for SP** — needs a token + network per query; the manifest is already synced every 30 min and is local/offline.
+**Supporting change:** added a `web_url` column to `sp_manifest` (payloads already carried the URL in `source`; the manifest didn't). Written on every sync via `_record_item`; existing 22,102 rows backfilled from Qdrant payloads by `agent/indexing/backfill_sp_weburl.py` (idempotent, read-only Qdrant retrieves + SQLite update — **adds zero Qdrant points**). Backfill also wired into nightly `task_sync_sharepoint` as a safety net.
+**Trade-off:** coverage = *indexed* files only (supported extensions, non-excluded, ≤ up to 30 min stale). Files never ingested (e.g. `.xlsx`, images) won't appear — acceptable; live `find`/Graph remain an optional future fallback.
+**Files:** new `hermes/plugins/qnoe_files/__init__.py`, new `agent/indexing/backfill_sp_weburl.py`; changed `agent/ingest/sharepoint_sync.py`, `agent/indexing/nightly_run.py`. Deployed + backfilled 2026-07-10 (commit `2b7fd26`). Env knobs: `CIFS_MANIFEST_DBS` (`:`-sep), `SP_MANIFEST_DB`. Pending: human Teams round-trip (TODO I9).
 
 ## D15 — Production cutover to gpt-oss-120b (llama.cpp), superseding Hermes 3 / vLLM
 

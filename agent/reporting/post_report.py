@@ -144,15 +144,20 @@ def _task_detail(t: dict) -> str:
         return (f"created {stats.get('snapshots_created', 0)}, "
                 f"pruned {stats.get('snapshots_pruned', 0)}")
     if n == "task_index_repos":
-        return (f"{stats.get('files_indexed', 0)} files indexed, "
+        new = stats.get('new_files', 0)
+        upd = stats.get('updated_files', 0)
+        breakdown = f"{new} new, {upd} updated" if (new or upd) else f"{stats.get('files_indexed', 0)} files"
+        return (f"{breakdown} indexed, "
                 f"+{stats.get('chunks_added', 0)} chunks, "
                 f"{stats.get('files_failed', 0)} failed")
     if n == "task_sync_sharepoint":
         parts = []
         for site, s in stats.items():
             if isinstance(s, dict):
-                parts.append(f"{site}: {s.get('processed', 0)}✓ "
-                             f"{s.get('skipped', 0)} skipped {s.get('errors', 0)}✗")
+                new = s.get('new', 0)
+                upd = s.get('updated', 0)
+                parts.append(f"{site}: {new} new, {upd} updated, "
+                             f"{s.get('deleted', 0)} deleted, {s.get('errors', 0)}✗")
         return " | ".join(parts) if parts else "—"
     if n == "task_scan_qcodes":
         return f"{stats.get('dbs_found', 0)} DBs, +{stats.get('new_runs', 0)} runs"
