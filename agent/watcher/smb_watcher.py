@@ -70,7 +70,7 @@ def _get_conn(config: dict) -> sqlite3.Connection:
 
 
 def _targeted_find(
-    folder: Path, supported_exts: set[str]
+    folder: Path, supported_exts: set[str], exclude_path_substrings: list[str] | None = None,
 ) -> dict[str, tuple[int, int, str]]:
     """Run `find` on a single folder, return {path: (mtime_ns, size, ext)}."""
     name_exprs: list[str] = []
@@ -78,12 +78,17 @@ def _targeted_find(
         name_exprs += ["-o", "-name", f"*{ext}"]
     name_exprs = name_exprs[1:]  # drop leading -o
 
+    exclude_exprs: list[str] = []
+    for substr in (exclude_path_substrings or []):
+        exclude_exprs += ["!", "-path", f"*{substr}*"]
+
     cmd = [
         "find", str(folder),
         "-type", "f",
         "!", "-name", "~$*",
         "!", "-path", "*/.git/*",
         "!", "-iname", "Thumbs.db",
+        *exclude_exprs,
         "(", *name_exprs, ")",
     ]
     try:
@@ -163,7 +168,7 @@ class FolderWatcher(threading.Thread):
                 self._stop.wait(60)
 
     def _scan_and_update(self):
-        current = _targeted_find(self._folder, self._exts)
+        current = _targeted_find(self._folder, self._exts, self._config.get("exclude_path_substrings"))
         with self._db_lock:
             conn = _get_conn(self._config)
             stats = update_cache_and_queue(conn, str(self._folder), current)
@@ -361,7 +366,7 @@ class CacheRebuilder(threading.Thread):
 
                 try:
                     logger.info("CacheRebuilder: scanning %s", folder)
-                    current = _targeted_find(folder, self._exts)
+                    current = _targeted_find(folder, self._exts, self._config.get("exclude_path_substrings"))
                     update_cache_and_queue(conn, str(folder), current)
                     conn.execute(
                         "INSERT OR REPLACE INTO rebuild_progress (folder, completed_at) VALUES (?, ?)",

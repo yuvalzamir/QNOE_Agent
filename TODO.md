@@ -54,9 +54,18 @@
 - [ ] **2. Tool-schema slimming** (per plan §2): `toolsets: [file, terminal, clarify, qnoe-lab]` replacing `hermes-cli` in all 3 profiles (~6.4K → ~3.7K tok). NOT via Tool Search — core tools never defer (verified in v0.17.0 source; Tool Search is currently a no-op for our profiles).
 - [ ] **3. Provence reranker swap** (per plan §3): download `naver/provence-reranker-debertav3-v1`, 20-query eval gate vs cross-encoder, integrate behind `RAG_RERANKER` env flag.
 - [x] **4. Prefix caching: VERIFIED (2026-07-10).** `enable_prefix_caching=True` (V1 startup log); live metrics show **81.5% prefix cache hit rate**; injection point confirmed in Hermes source (`conversation_loop.py`): RAG/Mem0 block is appended to the current turn's *user message* (end of prompt), so the SOUL+tools+history prefix stays cacheable. No change needed.
-- [ ] **5. Re-measure the ~19.5K tool-calling cliff** after 1-2 land (it may move when tool schemas shrink); update [[memory/decisions#D11]] notes.
+- [x] **5. ~19.5K tool-calling cliff: RESOLVED (2026-07-10) — it does not exist as a model limit.** Bare probes held structured tool calls to 32.4K; live failure is prose-fallback driven by context *composition* (tool-catalog size, tool-output length, chat prose). Retire the constant; watch for prose tool-syntax symptoms. See [[memory/mistakes#M40]] + correction block in [[CONTEXT_PRESSURE_REPORT]] §1.
 - [ ] **6. gpt-oss-120b pilot — IN PROGRESS (2026-07-10, user-approved after repeated Hermes-3 confabulations).** Handed off to an executing agent: [[GPT_OSS_PILOT_PLAN]]. Acceptance gate incl. the three 2026-07-10 confabulation cases (run 75000, QTM band structure, invented .db).
 - [ ] **Update memory notes** ([[memory/infrastructure]] + MEMORY.md) with the multi-user KV table from report §3.2 answer once deployed.
+
+---
+
+## Knowledge beyond the local corpus (2026-07-10, post-cutover)
+
+Context: gpt-oss's QTM band-structure answer was grounded but missed momentum-resolved tunneling — a knowledge-scope gap, not confabulation. Options 2+3 DONE (SOUL domain primers for QTM + photocurrent; grounding rules refined to allow *labeled* general-literature knowledge for conceptual questions while keeping the hard ban on invented lab-specific facts).
+
+- [ ] **Core-papers ingestion** — create a per-sub-team "core papers" folder (data server or SharePoint) and drop the flagship PDFs (QTM: Inbar et al. Nature 2023 + key follow-ups; photocurrent: PTE/PV foundational papers; etc.). The watcher/SP sync ingests them automatically — no code needed. **USER ACTION: choose and drop the PDFs.**
+- [ ] **Web-access policy decision (PI-level)** — whether to re-enable the `web`/`search` toolset for the agent (queries would leave the lab network; results feed answers). Related: [[PHASE2_BACKLOG]] B4 frontier-model access. Config change itself is one line once approved.
 
 ---
 
@@ -302,7 +311,7 @@
 #### Priority: HIGH
 - [x] **I5 — Nightly daemon health check** ✅ *(2026-07-03 — watcher healthy; cron log dir had wrong group `root`→`qnoe-ai`; snapshot pruning datetime bug fixed)*
 - [x] **I5b — Verify nightly cron produces logs** ✅ *(2026-07-07 — logs confirmed)*
-- [ ] **I5c — Verify SharePoint delta sync in nightly cron** — Check nightly log for SharePoint sync task output. Confirm delta sync runs, no auth errors, new files ingested into Qdrant `group-wide` collection.
+- [x] **I5c — Verify SharePoint delta sync in nightly cron** ✅ *(2026-07-10 — task_sync_sharepoint ran OK in 2.3s, status ok, 0 errors, 0 warnings. 0 processed is correct — full sync was Jul 9, no changes in <24h. Auth working, delta link stored.)*
 - [x] **I3 — Agent can't read the server** ✅ *(2026-07-03 — NOT a permissions issue. Both CIFS mounts are readable by qnoe-ai. Root cause: same as "Tool calling as text" — model outputs `read_file(path="...")` as plain text instead of structured tool calls. Fixed by setting `tool_use_enforcement: true`. Needs service restart to take effect.)*
 
 #### Priority: MEDIUM

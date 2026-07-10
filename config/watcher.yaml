@@ -25,6 +25,17 @@ watch_subfolder_level:
   - Personal
   - Fabrication
 
+# Path substrings to exclude (matched against full file path)
+exclude_path_substrings:
+  - /PyInstaller/
+  - /_pyinstaller/
+  - /venv/
+  - /.venv/
+  - /site-packages/
+  - /node_modules/
+  - /__pycache__/
+  - /.ipynb_checkpoints/
+
 # Subfolders to exclude entirely (relative to server_root)
 exclude_subfolders:
   - Projects/QDphotodetector
@@ -33,6 +44,7 @@ exclude_subfolders:
   - Notebook/Low_temperature_polaritons
   - Notebook/mid-IR_Plasmonic_detector_Seb
   - "Notebook/Graphene Optomechanics"
+  - "Personal/Sergi/QTM - Copy"   # bundled Python env with PyInstaller hooks
 
 # File extensions to watch
 supported_extensions:

@@ -239,3 +239,43 @@ Files are recorded in the manifest with empty `point_ids`, so they're skipped on
 **Root cause:** Qdrant returns `creation_time` without timezone suffix (e.g., `2026-07-03T08:24:04`). Code does `.replace("Z", "+00:00")` but there's no `Z` to replace. `fromisoformat` returns naive datetime, compared against tz-aware `cutoff`.
 **Fix:** Added `if created.tzinfo is None: created = created.replace(tzinfo=timezone.utc)` after parsing.
 **File:** `/opt/qnoe-agent/agent/indexing/nightly_run.py` line ~80.
+
+## M40 — The "~19.5K tool-calling cliff" was prose-fallback, not a model limit (2026-07-10)
+
+**What we believed (D11 era):** Hermes-3 loses structured `tool_calls` past ~19.5K prompt tokens (worked at 359, failed at ~19.5K live) — treated as a hard model ceiling; sized the whole context discipline around it.
+**What the gpt-oss pilot measured:** bare probes (same model, same vLLM, same hermes parser; neutral filler + small tool list + clear instruction) returned structured tool calls at **400 / 8.3K / 16.4K / 32.4K tokens**. No cliff in our operating range.
+**Actual mechanism — prose-fallback:** in agent-shaped context (many tool schemas, RAG chunks, multi-turn prose, long tool outputs) the model writes the call as prose (`read_file(path="…")`) instead of the structured channel; the parser then yields nothing. Failure tracks context *composition*, not length (matches IBM LongFuncEval: degradation scales with tool-catalog size and tool-output length).
+**Lessons:**
+1. Retire "19.5K" as a constant — watch for prose-fallback *symptoms* (tool syntax appearing in reply text), not a token number.
+2. Tool-schema slimming (12→7 resident) attacks the mechanism, not just the budget.
+3. Deterministic context hooks (QCoDeS registry lookup) bypass the model's tool decision entirely — immune to this failure class; prefer them for must-not-fail lookups.
+4. `tool_use_enforcement: true` stays as a guard while on Hermes-3.
+
+Closes roadmap step 5 of [[CONTEXT_PRESSURE_REPORT]]. Numbering note: M39 (unified-memory overcommit) lives on branch `feature/gpt-oss-pilot`.
+
+## M41 — venv vLLM cannot boot gpt-oss-120b on the Spark: Marlin repack doubles weight memory (2026-07-10)
+
+**Symptom:** supervised retry on an idle box (117 GB available, `--gpu-memory-utilization 0.55 --max-model-len 32768 --enforce-eager --max-num-seqs 2`): all 15 shards loaded (61 GB, ~7.5 min), then available RAM collapsed 45 GB → **0** within seconds of `Using MoEPrepareAndFinalizeNoDPEPModular` (Marlin post-load init).
+**Cause:** the Marlin MXFP4 path transiently needs a ~second copy of the weights during repacking → ~120+ GB peak > 128 GB unified. It is an **init-phase peak** — no flag tuning can fix it on this build (vLLM 0.22.1 venv).
+**Containment that worked:** a 5-second memory watchdog (`pkill -9` the pilot when available < 10 GB) turned the previous 40-50 min box hang into a ~35 min recoverable window; box needed no manual intervention. Pattern: ALWAYS run the watchdog before any experimental model boot.
+**Remaining candidates for gpt-oss-120b on one box:** NVIDIA vLLM container (possible in-place load), llama.cpp GGUF (mmap, no repack spike — source of the community 45-59 tok/s numbers), or drop to a smaller MoE (Qwen3-class A3B). Recovery pattern for a thrashing box: per-phase retrying SSH loop (cleanup → start vllm → health poll → restart hermes).
+
+## M42 — `pkill -f` over SSH kills your own remote shell (self-match) (2026-07-10)
+
+**Symptom:** every `ssh dgx "pkill -9 -f llama-server; …"` exited 255 with no output; three "successful-looking" production restores later, port 8000 was STILL serving the pilot llama-server — and `vllm.service` showed `active`/`activating` while endlessly failing to bind the port. Net effect: the lab agent unknowingly served gpt-oss for ~20 min.
+**Cause:** `pkill -f PATTERN` matches full command lines — including the remote bash running the compound command, whose cmdline contains the pattern string. The shell kills itself (exit 255, no output) and the intended target can survive. `2>/dev/null` + retry loops made it look like transient SSH flakiness.
+**Fix:** self-safe patterns: `pkill -9 -f 'llama[-]server'` (bracket breaks self-match) or `pkill -x <comm>`. **Always verify the kill**: `pgrep -cf 'llama[-]server' || echo ZERO` — and verify what is actually serving the port (`curl /v1/models`), not just `systemctl is-active` (a service can be "active" while crash-looping on a taken port).
+
+## M44 — Production agent couldn't read the lab-server QCoDeS registry (700 home dir) (2026-07-10)
+
+**Symptom:** live run-159 answer said "35 databases" (SharePoint entries only); true total is 49. All sample rows were `/tmp/qnoe-sharepoint-qcodes/` paths.
+**Cause:** `AGENT_DATA_DIR=/home/yzamir/qnoe_server_data`, but `/home/yzamir` was mode 700 — `qnoe-ai` (the service user) can't traverse, so `os.path.exists()` is False and the registry hook silently skips it. **The qnoe_qcodes plugin tools use the same path — production had likely NEVER seen the 75,994 lab-server runs, only SP-ingested ones.** Caught only because the hook reports a total count (the count-honesty fix from earlier the same day).
+**Fix:** `sudo chmod o+x /home/yzamir` (traverse-only; home stays unlistable/unreadable — `qnoe_server_data` itself was already 755). Verify by re-asking run 159 → expect 49.
+**Lessons:** (1) test data-access paths AS THE SERVICE USER, not as yourself; (2) deterministic counts in injected context act as integrity checks — a wrong count exposed this; (3) long-term: move shared data out of a user home (Phase-2 item).
+
+## M45 — Mem0 recall silently broken: Hermes `prefetch_all()` passes no session_id → uid "anon" (2026-07-10)
+
+**Symptom:** stated preferences landed in Qdrant under the correct Teams user_id, but the agent NEVER recalled them in later sessions ("I don't have any record…"), even though offline `mem0.search()` ranked the fact #1 for the exact question.
+**Diagnosis:** the per-turn injection log (added same day) showed `mem_facts=0 … session=''` — Hermes core (`turn_context.py:392`) calls `memory_manager.prefetch_all(_query)` WITHOUT `session_id`, so the plugin's `_uid_for("")` fell through to uid **"anon"** → empty search. The write path (`sync_all`) DOES pass session_id, which is why storage looked healthy. The original "verification" passed only because the fact was still inside the conversation window.
+**Fix (plugin-side, survives Hermes upgrades):** remember `self._last_uid` in `initialize()` (which gets session+user every turn) and fall back to it when `session_id` is empty. Caveat: truly concurrent multi-user turns could briefly attribute a read to the wrong user — read-side only, acceptable; revisit if Hermes core ever passes session_id (candidate upstream one-liner).
+**Lessons:** (1) verify memory recall in a FRESH session, not the session where the fact was stated; (2) per-turn injection logging (mem_facts / qcodes_block / rag_chars / session) is what made this diagnosable in one look — keep it.

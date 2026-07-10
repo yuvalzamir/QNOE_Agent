@@ -33,6 +33,16 @@ logger = logging.getLogger(__name__)
 
 AGENT_DATA_DIR = os.environ.get("AGENT_DATA_DIR", "/home/yzamir/qnoe_server_data")
 REGISTRY_DB = os.path.join(AGENT_DATA_DIR, "episodic.db")
+# Lab-server registry + SharePoint-ingest registry (identical schema).
+# Both must be searched — see memory/mistakes.md M44. Colon-separated override.
+REGISTRY_DBS = [
+    p
+    for p in os.environ.get(
+        "QCODES_REGISTRY_DBS",
+        REGISTRY_DB + ":/opt/qnoe-agent/memory/episodic.db",
+    ).split(":")
+    if p
+]
 
 MAX_RESULTS = 50
 
@@ -44,9 +54,12 @@ QCODES_SEARCH_SCHEMA = {
     "name": "qcodes_search",
     "description": (
         "Search the QCoDeS measurement registry for experiment runs. "
-        "Returns run cards with experiment name, sample, parameters, "
-        "timestamp, and source database path. Use to find specific "
-        "measurements by sample name, experiment type, or date range."
+        "Returns run cards with experiment name, sample, run name, swept + "
+        "measured parameters, timestamp, and source database path. Use to "
+        "find measurements by sample, experiment, setup path, or date range. "
+        "IMPORTANT: for 'X sweep' questions (gate sweep, field sweep, bias "
+        "sweep) use the swept_parameter filter — it matches what was "
+        "actually swept, which free-text matching does not."
     ),
     "parameters": {
         "type": "object",
@@ -73,6 +86,23 @@ QCODES_SEARCH_SCHEMA = {
             "date_to": {
                 "type": "string",
                 "description": "End date filter (ISO format, e.g. 2026-06-30).",
+            },
+            "swept_parameter": {
+                "type": "string",
+                "description": (
+                    "Filter by the SWEPT (independent) parameter name/label, "
+                    "partial match — e.g. 'gate' finds true gate sweeps. Use "
+                    "this for questions like 'last gate sweep' or 'field "
+                    "sweeps'; free-text query only matches names, not what "
+                    "was actually swept."
+                ),
+            },
+            "path": {
+                "type": "string",
+                "description": (
+                    "Filter by database file path (partial match), e.g. "
+                    "'L110 QTM' for the QTM room-T setup."
+                ),
             },
             "limit": {
                 "type": "integer",
@@ -153,17 +183,31 @@ def _epoch_to_iso(epoch) -> str:
         return str(epoch)
 
 
+def _connect_ro(db: str) -> sqlite3.Connection:
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=3)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 def _fetch_run(db_path: str, run_id: int) -> Optional[Dict[str, Any]]:
-    """Fetch a single run record from qcodes_registry by (db_path, run_id)."""
-    conn = _get_db()
-    try:
-        row = conn.execute(
-            "SELECT * FROM qcodes_registry WHERE db_path=? AND run_id=?",
-            (db_path, run_id),
-        ).fetchone()
-        return dict(row) if row else None
-    finally:
-        conn.close()
+    """Fetch a single run record by (db_path, run_id) from any registry."""
+    for db in REGISTRY_DBS:
+        if not os.path.exists(db):
+            continue
+        try:
+            conn = _connect_ro(db)
+            try:
+                row = conn.execute(
+                    "SELECT * FROM qcodes_registry WHERE db_path=? AND run_id=?",
+                    (db_path, run_id),
+                ).fetchone()
+                if row:
+                    return dict(row)
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.warning("Registry read failed for %s: %s", db, exc)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -221,12 +265,16 @@ def _search(
     experiment: str = "",
     date_from: str = "",
     date_to: str = "",
+    swept_parameter: str = "",
+    path: str = "",
     limit: int = 20,
 ) -> List[Dict[str, Any]]:
-    """Query qcodes_registry with optional filters."""
-    if not os.path.exists(REGISTRY_DB):
-        return []
+    """Query all registries with optional filters.
 
+    ``swept_parameter`` is verified against the parsed run description
+    (the truly swept axes), not just text matching — the LIKE on
+    description_json below is only a cheap prefilter.
+    """
     conditions: List[str] = []
     params: list = []
 
@@ -242,6 +290,12 @@ def _search(
     if experiment:
         conditions.append("exp_name LIKE ?")
         params.append(f"%{experiment}%")
+    if path:
+        conditions.append("db_path LIKE ?")
+        params.append(f"%{path}%")
+    if swept_parameter:
+        conditions.append("description_json LIKE ?")
+        params.append(f"%{swept_parameter}%")
     if date_from:
         conditions.append("completed_timestamp >= ?")
         params.append(_iso_to_epoch(date_from))
@@ -251,22 +305,49 @@ def _search(
 
     where = " AND ".join(conditions) if conditions else "1=1"
     limit = min(max(1, limit), MAX_RESULTS)
-    params.append(limit)
+    # Over-fetch when the swept filter will prune rows post-parse.
+    fetch_n = limit * 10 if swept_parameter else limit
 
     sql = f"""
         SELECT db_path, run_id, exp_name, sample_name, run_name,
-               parameters, completed_timestamp
+               parameters, completed_timestamp, description_json
         FROM qcodes_registry
         WHERE {where}
         ORDER BY completed_timestamp DESC
         LIMIT ?
     """
-    conn = _get_db()
-    try:
-        rows = conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
-    finally:
-        conn.close()
+    rows: List[Dict[str, Any]] = []
+    for db in REGISTRY_DBS:
+        if not os.path.exists(db):
+            continue
+        try:
+            conn = _connect_ro(db)
+            try:
+                rows.extend(dict(r) for r in conn.execute(sql, params + [fetch_n]).fetchall())
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.warning("Registry search failed for %s: %s", db, exc)
+
+    if swept_parameter:
+        needle = swept_parameter.lower()
+        rows = [
+            r
+            for r in rows
+            if any(
+                needle in s["name"].lower() or needle in (s.get("label") or "").lower()
+                for s in _parse_params(r.get("description_json"))["swept"]
+            )
+        ]
+
+    def _ts(r: Dict[str, Any]) -> float:
+        try:
+            return float(r.get("completed_timestamp") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    rows.sort(key=_ts, reverse=True)
+    return rows[:limit]
 
 
 def _handle_qcodes_search(args: Dict[str, Any]) -> str:
@@ -277,22 +358,25 @@ def _handle_qcodes_search(args: Dict[str, Any]) -> str:
             experiment=args.get("experiment", ""),
             date_from=args.get("date_from", ""),
             date_to=args.get("date_to", ""),
+            swept_parameter=args.get("swept_parameter", ""),
+            path=args.get("path", ""),
             limit=args.get("limit", 20),
         )
         if not rows:
             return json.dumps({"result": "No matching measurements found.", "count": 0})
-        results = [
-            {
+        results = []
+        for r in rows:
+            p = _parse_params(r.get("description_json"))
+            results.append({
                 "db_path": r["db_path"],
                 "run_id": r["run_id"],
                 "experiment": r["exp_name"],
                 "sample": r["sample_name"],
                 "run_name": r["run_name"],
-                "parameters": r["parameters"],
+                "swept": [s["name"] for s in p["swept"]],
+                "measured": [m["name"] for m in p["measured"]],
                 "timestamp": _epoch_to_iso(r["completed_timestamp"]),
-            }
-            for r in rows
-        ]
+            })
         return json.dumps({"results": results, "count": len(results)})
     except Exception as e:
         return json.dumps({"error": str(e)})

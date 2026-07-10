@@ -43,6 +43,9 @@
 | [[AGENT_FRAMEWORK]] | LangGraph design, system prompts, MVP scope |
 | [[MIGRATION_PLAN]] | Hermes Agent migration phases M1–M8 |
 | [[PHASE2_BACKLOG]] | Post-MVP features B1–B7 |
+| [[CONTEXT_PRESSURE_REPORT]] | Context-pressure analysis + roadmap (KV math, demand reduction, MoE model swap, 2-Spark scale-out) — user-accepted 2026-07-09 |
+| [[CONTEXT_EXECUTION_PLAN]] | Hand-off plan for roadmap steps 1-3 (vLLM 64K+fp8, toolset slimming, Provence) — executed 2026-07-09/10 |
+| [[GPT_OSS_PILOT_PLAN]] | Hand-off plan for roadmap step 6: pilot gpt-oss-120b as generation model — executing agent launched 2026-07-10 |
 | [[MEM0_INTEGRATION]] | Program to add per-user Mem0 memory inside `qnoe_rag` (see [[memory/decisions#D13]]) |
 | [[REPO_MAPPING]] | Repo → Qdrant collection mapping |
 | [[WATCHER_PLAN]] | SMB3 watcher daemon design |
