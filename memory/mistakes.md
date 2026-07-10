@@ -253,3 +253,19 @@ Files are recorded in the manifest with empty `point_ids`, so they're skipped on
 **Symptom:** Can't inspect vLLM startup KV-cache lines or the Hermes gateway's per-turn prompt/token/tool logs; `journalctl -u <svc>` shows "No entries" for `yzamir` (not in `adm`/`systemd-journal`), and `journalctl` is not in the NOPASSWD sudo list.
 **Workaround:** Redirect the service's stdout to a file in `scripts/start_vllm.sh` (`... > /opt/qnoe-agent/logs/vllm.log 2>&1`) — the service runs as `qnoe-ai` which can write `logs/`. For offline tool-schema/token measurement, call `model_tools.get_tool_definitions(enabled_toolsets=...)` directly from the venv and tokenize via vLLM's `/tokenize` endpoint (needs no profile access).
 **Related limitation:** `hermes prompt-size` (the proper floor tool) needs read access to the 0700/qnoe-ai profile dir; `sudo -u qnoe-ai` is not in NOPASSWD and a temp copy breaks on the profile's cyclic `plugins`/`.env` symlinks — so the fresh-session floor had to be *derived* from the measured tool-schema delta, not read directly.
+
+## M37 — Gateway ignores `toolsets:` config; uses `platform_toolsets` (2026-07-10)
+
+**Symptom:** After toolset slimming (`toolsets: [file, terminal, clarify, qnoe-lab]`), live Teams sessions still had 13 visible tools incl. `skill_manage`/`memory` — the agent listed them when asked.
+**Cause:** `gateway/run.py` resolves session toolsets via `_get_platform_tools(user_config, platform_key)`, which reads the **`platform_toolsets:`** config key (per platform, e.g. `teams_polling`) and falls back to subset-inference over the platform's default composite toolset. The top-level `toolsets:` key only affects non-gateway paths. Offline verification via `get_tool_definitions(enabled_toolsets=…)` therefore did NOT match live behavior.
+**Fix:** add to shared + all profile configs:
+```yaml
+platform_toolsets:
+  teams_polling: [file, terminal, clarify, qnoe-lab]
+```
+**Verify live, not offline:** after restart, check `tools.tool_search` log line "N core/visible tools kept" in the profile's `agent.log` on the next session.
+
+## M38 — RAG-only answers confabulate specific QCoDeS runs (2026-07-10)
+
+**Symptom:** Asked "what parameters were recorded in QCoDeS run 75000?", the agent gave a detailed, plausible answer (experiment name, sample, params, timestamp). **Run 75000 does not exist** — max `run_id` in the registry is 59,477. No QCoDeS tool call was made; the model stitched details from semantically-similar RAG chunks.
+**Lesson:** existence questions can't be answered from similarity search. For run-id lookups the agent must call the QCoDeS tools (via the tool_search bridge) and report "not found" honestly. Candidate fix: SOUL instruction + re-test (open item).
