@@ -347,6 +347,7 @@ def _qcodes_registry_block(message: str) -> str:
         return ""
     run_id = int(m.group(1))
     rows: list[tuple] = []
+    total = 0
     searched = False
     for db in QCODES_REGISTRY_DBS:
         if not os.path.exists(db):
@@ -354,10 +355,14 @@ def _qcodes_registry_block(message: str) -> str:
         try:
             con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=3)
             try:
+                total += con.execute(
+                    "SELECT COUNT(*) FROM qcodes_registry WHERE run_id=?",
+                    (run_id,),
+                ).fetchone()[0]
                 cur = con.execute(
                     "SELECT db_path, run_id, run_name, sample_name, "
                     "parameters, completed_timestamp FROM qcodes_registry "
-                    "WHERE run_id=? LIMIT 3",
+                    "WHERE run_id=? LIMIT 5",
                     (run_id,),
                 )
                 rows.extend(cur.fetchall())
@@ -378,8 +383,17 @@ def _qcodes_registry_block(message: str) -> str:
             "Run ids are per-database — if the user means a specific database, "
             "ask which one or use the QCoDeS tools (find them via tool_search).\n\n"
         )
-    lines = [header]
-    for db_path, rid, run_name, sample, params, ts in rows[:5]:
+    shown = rows[:8]
+    lines = [
+        header,
+        f"Run id {run_id} exists in {total} indexed database(s) "
+        f"(run ids are per-database, so these are unrelated measurements). "
+        f"Showing {len(shown)} of {total} — tell the user the TOTAL count and "
+        "that the list below is a sample; offer to narrow by project or "
+        "database. Do not present this sample as the complete list, and do "
+        "not add databases from RAG chunks.",
+    ]
+    for db_path, rid, run_name, sample, params, ts in shown:
         lines.append(
             f"- Run {rid} in {db_path}: name={run_name!r}, sample={sample!r}, "
             f"completed={ts}, parameters={params}"
