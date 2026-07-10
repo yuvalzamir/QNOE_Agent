@@ -247,11 +247,14 @@ async def _retrieve(query: str, collections: list[str]) -> list[dict]:
     if not all_results:
         return []
 
-    # Deduplicate by (source, text prefix)
+    # Deduplicate by content only — the same document often exists under
+    # several sources (server path, SharePoint URL variants, backup copies),
+    # and source-keyed dedup let 3 copies of one paragraph fill the top-5
+    # (2026-07-10 QTM band-structure failure).
     seen: set[str] = set()
     deduped: list[dict] = []
     for chunk in sorted(all_results, key=lambda c: c["score"], reverse=True):
-        key = chunk["source"] + chunk["text"][:80]
+        key = " ".join(chunk["text"][:200].split())
         if key not in seen:
             seen.add(key)
             deduped.append(chunk)
