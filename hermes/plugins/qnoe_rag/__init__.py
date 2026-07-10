@@ -460,6 +460,7 @@ class QnoeRagProvider(MemoryProvider):
         # on_session_switch), so key Mem0 per session_id -> user_id rather
         # than a single self._user_id.
         self._session_users: Dict[str, str] = {}
+        self._last_uid: str = ""
 
     @property
     def name(self) -> str:
@@ -482,6 +483,14 @@ class QnoeRagProvider(MemoryProvider):
         uid = kwargs.get("user_id") or kwargs.get("user_id_alt") or ""
         if uid:
             self._session_users[session_id] = uid
+            # Hermes core calls prefetch_all() WITHOUT session_id (verified
+            # 2026-07-10: injection log showed session='' -> uid 'anon' ->
+            # mem_facts=0 despite correct facts in Qdrant). initialize() DOES
+            # get session+user each turn, so remember the last user as a
+            # fallback. Caveat: with truly concurrent multi-user turns this
+            # can briefly attribute a lookup to the wrong user — acceptable
+            # for read-side recall, revisit if Hermes passes session_id later.
+            self._last_uid = uid
         logger.info(
             "QnoeRag initialized for profile=%s, collections=%s, session=%s, user=%s",
             self._profile,
@@ -491,10 +500,17 @@ class QnoeRagProvider(MemoryProvider):
         )
 
     def _uid_for(self, session_id: str) -> str:
-        # Fallback: if no platform user_id was seen for this session, key
-        # Mem0 on session_id — degrades to per-conversation memory rather
-        # than crashing or bleeding memory across users.
-        return self._session_users.get(session_id) or session_id or "anon"
+        # Order: exact session mapping > last-initialized user (covers
+        # Hermes core's session-less prefetch_all calls) > session_id
+        # (per-conversation memory) > anon.
+        uid = self._session_users.get(session_id or "")
+        if uid:
+            return uid
+        if getattr(self, "_last_uid", ""):
+            if not session_id:
+                logger.info("Mem0 uid fallback -> last-initialized user %s", self._last_uid)
+            return self._last_uid if not session_id else (session_id or self._last_uid)
+        return session_id or "anon"
 
     def system_prompt_block(self) -> str:
         colls = ", ".join(self._collections)
