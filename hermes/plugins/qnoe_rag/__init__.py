@@ -101,7 +101,10 @@ MEM0_CONFIG = {
             "openai_base_url": VLLM_BASE_URL,
             "api_key": "not-needed",
             "temperature": 0.1,
-            "max_tokens": 512,
+            # 1536, not 512: gpt-oss spends output tokens on reasoning before
+            # the JSON; at 512 the JSON gets truncated ("Error parsing
+            # extraction response", 2026-07-10).
+            "max_tokens": 1536,
         },
     },
     "embedder": {
@@ -538,6 +541,17 @@ class QnoeRagProvider(MemoryProvider):
                 mem_block = _format_facts(facts)
             except Exception as e:
                 logger.warning("Mem0 search failed: %s", e)
+
+        # Per-turn injection observability (added 2026-07-10 after a live turn
+        # denied knowledge of a fact that ranked #1 in offline Mem0 search).
+        logger.info(
+            "prefetch inject: mem_facts=%d qcodes_block=%s rag_chars=%d session=%s query=%r",
+            mem_block.count("\n- ") + (1 if mem_block.startswith("- ") else 0),
+            bool(qcodes_block),
+            len(rag_block),
+            session_id,
+            (query or "")[:80],
+        )
 
         return (mem_block + qcodes_block + rag_block) or ""
 
