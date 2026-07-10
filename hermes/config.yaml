@@ -1,28 +1,22 @@
-# Hermes Agent config for QNOE Lab Agent
-# vLLM local endpoint (Hermes 3 70B AWQ)
-# This is the SHARED config. Per-profile overrides in profiles/*/config.yaml.
-
 model:
   default: /opt/qnoe-agent/models/hermes-3-70b-awq
-  provider: vllm-local
-  context_length: 32768
-
+  provider: custom
+  base_url: http://localhost:8000/v1
+  api_key: no-key-required
+  context_length: 65536
+  max_tokens: 4096
 custom_providers:
-  - name: vLLM-local
-    base_url: http://localhost:8000/v1
-
-# Toolsets
+- name: vLLM-local
+  base_url: http://localhost:8000/v1
 toolsets:
-  - hermes-cli
-  - qnoe-lab
-
-# Plugins (standalone user plugins need explicit enablement)
+- file
+- terminal
+- clarify
+- qnoe-lab
 plugins:
   enabled:
-    - qnoe_qcodes
-    - teams_polling
-
-# Agent settings
+  - qnoe_qcodes
+  - teams_polling
 agent:
   max_turns: 90
   gateway_timeout: 1800
@@ -32,58 +26,40 @@ agent:
   environment_probe: false
   coding_context: auto
   disabled_toolsets:
-    - tts
-    - session_search
-    - todo
-    - cronjob
-    - delegation
-    - image_gen
-
-# Delegation (subagent routing)
+  - tts
+  - session_search
+  - todo
+  - cronjob
+  - delegation
+  - image_gen
 delegation:
-  model: ""                    # inherit parent model (vLLM Hermes 3 70B)
-  max_iterations: 25           # per-subagent cap (conservative for 32K context)
-  max_concurrent_children: 2   # max parallel subagents
-  max_async_children: 1        # max background subagents
-  max_spawn_depth: 1           # flat: orchestrator -> leaf only
+  model: ''
+  max_iterations: 25
+  max_concurrent_children: 2
+  max_async_children: 1
+  max_spawn_depth: 1
   orchestrator_enabled: true
-  subagent_auto_approve: false # safe default — deny dangerous commands in subagents
+  subagent_auto_approve: false
   inherit_mcp_toolsets: true
-
-# Terminal (local execution on DGX)
 terminal:
   backend: local
   timeout: 180
-
-# File read limits
 file_read_max_chars: 100000
-
-# Tool output limits
 tool_output:
   max_bytes: 50000
   max_lines: 2000
   max_line_length: 2000
-
-# Logging
 logging:
   level: INFO
   max_size_mb: 5
   backup_count: 3
-
-# Sessions
 sessions:
   auto_prune: false
   retention_days: 90
-
-# Security
 security:
   allow_private_urls: true
   redact_secrets: true
-
-# Multi-profile routing (per-user profile assignment via user_profiles.yaml)
 multiplex_profiles: true
-
-# Gateway — Teams polling adapter
 gateway:
   strict: false
   platforms:
@@ -94,22 +70,25 @@ gateway:
         poll_interval_idle: 10
         active_window: 300
         chat_refresh_interval: 300
-
-# Memory provider (QNOE RAG plugin)
 memory:
+  user_profile_enabled: false
   provider: qnoe_rag
-
-# Streaming disabled
 streaming:
   enabled: false
-
-# Context compression (reduces context bloat — I1)
+_config_version: 33
+onboarding:
+  seen:
+    busy_input_prompt: true
+approvals:
+  destructive_slash_confirm: false
 compression:
   threshold: 0.75
-
-# Tool Search (dynamic tool schema loading)
 tools:
   tool_search:
     enabled: 'on'
-
-_config_version: 34
+platform_toolsets:
+  teams_polling:
+  - file
+  - terminal
+  - clarify
+  - qnoe-lab

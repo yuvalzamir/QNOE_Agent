@@ -1,6 +1,3 @@
-# Photocurrent sub-profile config — overrides shared config.yaml
-# Gateway/Teams disabled here (orchestrator handles gateway).
-
 model:
   default: /opt/qnoe-agent/models/hermes-3-70b-awq
   provider: custom
@@ -66,12 +63,22 @@ gateway:
     teams_polling:
       enabled: false
 memory:
+  user_profile_enabled: false
   provider: qnoe_rag
 streaming:
   enabled: false
+_config_version: 34
+onboarding:
+  seen:
+    busy_input_prompt: true
 compression:
   threshold: 0.75
 tools:
   tool_search:
     enabled: 'on'
-_config_version: 34
+platform_toolsets:
+  teams_polling:
+  - file
+  - terminal
+  - clarify
+  - qnoe-lab

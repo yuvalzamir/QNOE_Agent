@@ -1,6 +1,3 @@
-# Orchestrator profile config — overrides shared config.yaml
-# This is the primary profile; gateway and Teams polling are enabled here.
-
 model:
   default: /opt/qnoe-agent/models/hermes-3-70b-awq
   provider: custom
@@ -74,12 +71,24 @@ gateway:
         active_window: 300
         chat_refresh_interval: 300
 memory:
+  user_profile_enabled: false
   provider: qnoe_rag
 streaming:
   enabled: false
+_config_version: 33
+onboarding:
+  seen:
+    busy_input_prompt: true
+approvals:
+  destructive_slash_confirm: false
 compression:
   threshold: 0.75
 tools:
   tool_search:
     enabled: 'on'
-_config_version: 34
+platform_toolsets:
+  teams_polling:
+  - file
+  - terminal
+  - clarify
+  - qnoe-lab
