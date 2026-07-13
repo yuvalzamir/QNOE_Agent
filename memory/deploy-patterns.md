@@ -60,10 +60,15 @@ tail -f /opt/qnoe-agent/logs/nightly_reindex.log
 
 The DGX does **not** track `master`. It runs a hand-deployed mix, and several feature branches are pushed-but-never-merged (per lab convention, merges to `main`/`master` need PI approval). Before deploying, **compare `md5sum` of the target file on the DGX against the intended source** — don't assume the repo == what's running.
 
-Snapshot when the SP-poller-reporting fix went out (2026-07-13):
-- **Unmerged feature branches** (deployed on DGX in part, not on master): `feature/gpt-oss-cutover` (the inference stack actually running), `feature/mem0-per-user`, `feature/context-pressure`, `feature/gpt-oss-pilot`. `master` HEAD (`08d89a7`) predates the cutover in git even though the cutover is live on the box.
-- **Uncommitted DGX-only edits** (match no commit on any branch — at risk of being clobbered by a repo redeploy; pull them back into git): `agent/ingest/clone_org.py`, `agent/ingest/ingest_server.py`.
-- **DGX behind master** on the reporting files: at deploy time `sharepoint_sync.py`/`nightly_run.py` were at commit `2b7fd26` and `post_report.py` at `b5c0c78` — i.e. the committed `8109af0` "new vs updated report" feature had never been deployed. Deploying the SP-poller fix (from master) also shipped that.
-- **Legacy cruft on DGX, removed from repo:** `agent/{graph,main,llm,teams,tools,state,prompts,retrieval,episodic,teams_check,__init__}.py` — pre-Hermes LangGraph modules, no longer run.
+Full audit + partial reconciliation done 2026-07-13 (branch `feature/sp-poller-reporting`). **CAUTION comparing md5:** the Windows working tree is CRLF but git blobs + the DGX are LF, so `git ls-files | xargs md5sum` vs DGX gives false-positive diffs. Compare `git show HEAD:<file>` (LF) to the DGX file, not the working tree.
+
+Corrected drift map (direction matters — most drift was **DGX stale, git ahead**, NOT DGX hotfixes):
+- **Bucket A — DGX stale, git ahead → deployed git→DGX (done):** `clone_org.py` (git HEAD sanitizes the GitHub PAT out of error logs; the DGX copy was logging raw stderr — a **PAT-leak**), `ingest_server.py` (missing `manifest_db=`), `run_ingest.py` (behind `4c8c490`), `teams_check.py` (whitespace only, skipped). My first pass wrongly called clone_org/ingest_server "uncommitted DGX edits" — they were just STALE.
+- **Bucket B — live config never in git → captured DGX→git (done):** `config/gateway.toml` (openshell gateway JWT paths), `config/sandbox-policy.yaml` (the T4 sandbox policy from CLAUDE.md).
+- **Bucket C — dead LangGraph cruft on DGX, not in git (NOT yet removed, pending user OK):** `agent/{graph,llm,main,prompts,retrieval,state,teams,tools}.py` + `agent/watcher/smb_watcher.py.bak`. Verified **no live imports** (`grep` for `from agent.<mod> import` across agent/hermes/scripts = none). Runtime is Hermes, not `python -m agent.main`.
+- **Bucket D — legacy deploy path, divergent (flagged, untouched):** `scripts/start_agent.sh` (DGX = `docker run`; git = `openshell sandbox`) — not the live path.
+- **Bucket E — UNAUDITED:** `hermes/` (700/qnoe-ai — can't `ls`/`find` as yzamir; needs `sudo cat` per known file or a perms window) and the unmerged branches `feature/{gpt-oss-cutover,mem0-per-user,context-pressure,gpt-oss-pilot}` whose work is deployed but never merged to master. True parity needs consolidating these into one committed baseline (PI-approval merge).
+
+**Root cause of drift:** deployment is manual (`scp`+`sudo cp`) with no link to git. Durable fix (proposed, not built): a deploy script that syncs a specific git ref → `/opt/qnoe-agent` so the box always equals a known commit.
 
 **Pin-a-file-to-a-commit recipe** (which version is deployed?): `for c in $(git log --format=%h -40 <ref> -- <file>); do [ "$(git show $c:<file>|md5sum|cut -d' ' -f1)" = "<dgx_md5>" ] && echo $c; done`. Iterate over `git for-each-ref refs/heads refs/remotes` to search all branches, not just the current one.
