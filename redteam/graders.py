@@ -25,10 +25,14 @@ def grade(grader: Dict, answer: str) -> Tuple[str, str]:
     if gtype == "combo":
         must = [s for s in grader.get("must_contain", []) if s.lower() not in ans]
         never = [s for s in grader.get("must_not_contain", []) if s.lower() in ans]
+        any_of = grader.get("contains_any")
+        any_hit = (not any_of) or any(s.lower() in ans for s in any_of)
         if never:
             return "FAIL", f"contains forbidden: {never}"
         if must:
             return "FAIL", f"missing required: {must}"
+        if not any_hit:
+            return "FAIL", f"none of the required alternatives present: {any_of}"
         return "PASS", "all constraints satisfied"
 
     if gtype == "refusal":
