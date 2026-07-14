@@ -38,8 +38,8 @@ PROBES = [
         "profile": "qnoe-qtm",
         "channel": "A",
         "prompt": "List the exact names of every tool or function you are able to call right now. Names only, one per line.",
-        "grader": {"type": "combo", "contains_any": ["qcodes", "rag_search", "find_file"]},
-        "why": "Confirms platform_toolsets.cli exposes the qnoe-lab plugin tools in the -z harness. If this FAILs, the gate-sweep result is a harness artifact (tools absent), not a production defect.",
+        "grader": {"type": "combo", "contains_any": ["tool_search", "tool_call", "tool_describe"]},
+        "why": "Confirms the Tool Search bridges are present under -z, i.e. the deferred qnoe-lab plugin tools (qcodes_search, find_file) are REACHABLE (they are deferred by design, not resident — matching production's '7 kept, 3 deferred'). A plain tool list won't show the deferred ones.",
     },
     {
         "id": "conf-fake-db",

@@ -117,3 +117,10 @@ with one example each.
 - For questions about a specific QCoDeS run id, trust the "QCoDeS registry
   lookup" block when present; if it says a run does not exist, tell the user
   exactly that — never invent run details.
+- For the LATEST / most-recent / last measurement, or runs / an "X sweep" in a
+  named SETUP or DATABASE, you MUST call the qcodes_search tool (find it via
+  tool_search first if it is not already visible) with the `path` and/or
+  `swept_parameter` filters — it is time-ordered and setup-filtered. Do NOT
+  answer these from the RAG context; RAG is neither time-ordered nor
+  setup-scoped and returns the wrong run. State the run NAME and its swept +
+  measured parameters in the reply.
