@@ -30,11 +30,18 @@
       - /ICFO/smbhome/yzamir            # container: not mounted
       - /mnt/noe                        # container: not mounted. 2nd CIFS mount of the NOE share (uid=qnoe-ai) — was a full systemd bypass, redteam R4 follow-up
       - /home/yzamir/qnoe_server_data   # qcodes registry (sqlite journal_mode=delete — ro readers need no side files; do NOT switch to WAL)
-    inaccessible:
-      - /opt/qnoe-agent/secrets     # systemd: InaccessiblePaths + LoadCredential; container: dir not mounted,
-                                    # ONLY secrets/teams.env single-file ro bind -> /run/qnoe/teams.env ($TEAMS_ENV_FILE)
-      - /home/qnoe-ai/.local        # container: not mounted — holds OpenShell's OWN gateway TLS/JWT keys; mounting it would let the confined agent steal them
-      - /home/qnoe-ai/.profile      # container: not mounted — poisoning it would run code unconfined at next gateway start
+    # INACCESSIBLE (not a schema field — OpenShell only knows read_only/read_write;
+    # these are enforced by NOT appearing in the mount map, and under systemd by
+    # InaccessiblePaths=):
+    #   /opt/qnoe-agent/secrets   — dir never mounted; ONLY secrets/teams.env goes in
+    #                               as a single-file ro bind -> /run/qnoe/teams.env
+    #                               ($TEAMS_ENV_FILE). systemd: InaccessiblePaths +
+    #                               LoadCredential.
+    #   /home/qnoe-ai/.local      — never mounted: holds OpenShell's OWN gateway
+    #                               TLS/JWT keys; mounting would let the confined
+    #                               agent steal them
+    #   /home/qnoe-ai/.profile    — never mounted: poisoning it would run code
+    #                               unconfined at next gateway start
     read_write:
       - /opt/qnoe-agent/memory      # Mem0 + SQLite episodic + fastembed_cache (R9: BM25 cache must be persistent, not /tmp)
       - /opt/qnoe-agent/logs
