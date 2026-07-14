@@ -72,3 +72,14 @@ Corrected drift map (direction matters — most drift was **DGX stale, git ahead
 **Root cause of drift:** deployment is manual (`scp`+`sudo cp`) with no link to git. Durable fix (proposed, not built): a deploy script that syncs a specific git ref → `/opt/qnoe-agent` so the box always equals a known commit.
 
 **Pin-a-file-to-a-commit recipe** (which version is deployed?): `for c in $(git log --format=%h -40 <ref> -- <file>); do [ "$(git show $c:<file>|md5sum|cut -d' ' -f1)" = "<dgx_md5>" ] && echo $c; done`. Iterate over `git for-each-ref refs/heads refs/remotes` to search all branches, not just the current one.
+
+**CRLF trap when deploying scripts:** the Windows working tree is CRLF; `scp` copies bytes exactly, so a deployed shell script gets a `#!/bin/bash\r` shebang → systemd `203/EXEC` crash loop. Deploy tracked files from the LF blob (`git show HEAD:<file>`), or `tr -d '\r'` an uncommitted file before `sudo cp`. Verify: `sudo cat <file> | tr -cd '\r' | wc -c` must be 0. See [[memory/mistakes#M48]].
+
+## Onboarding a new agent user (access control)
+
+Access is enforced by the gateway (`GATEWAY_ALLOW_ALL_USERS=false` + `GATEWAY_ALLOWED_USERS` in `scripts/start_hermes.sh`) plus the **`qnoe_authz`** plugin's notify-and-approve flow (see [[TODO]] "User allowlist", 2026-07-14).
+
+- **Normal path (self-service, no SSH):** the new person DMs the bot once → an access request posts to the **Agent Logs** Teams channel with a ready `/approve <id>` line, and they get a "pending" reply. An admin (Yuval/Frank) DMs the bot **`/approve <id>`** (or `/deny <id>`). Approval lands in `hermes/pairing/teams_polling-approved.json`, which the gateway re-reads live — **no restart**. Other admin commands: `/pending`, `/revoke <id>`.
+- **Permanent members ("floor"):** to add someone who must never be lockable (or a new admin), edit `GATEWAY_ALLOWED_USERS` (and `QNOE_ADMIN_USER_IDS` for approvers) in `start_hermes.sh`, redeploy (LF!), and restart. Floor members can't be `/revoke`d — they're env, not pairing store.
+- **Also map their profile** (optional): add their AAD id → profile in `hermes/config/user_profiles.yaml` (unmapped users get `qnoe-orchestrator`).
+- **Finding a user's AAD id:** it's the `user_id` in the gateway session store, the `WARNING Unauthorized user: <id>` log line, the `/pending` list, or Entra admin center → Users → Object ID. (The bot's app registration lacks `User.ReadBasic.All`, so Graph directory *name→id* search 403s; enumerating existing DM chat members via `Chat.Read` does work.)

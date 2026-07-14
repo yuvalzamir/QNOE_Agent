@@ -1,13 +1,13 @@
 model:
   default: gpt-oss-120b
   provider: custom
-  base_url: http://localhost:8000/v1
+  base_url: http://host.openshell.internal:8000/v1  # resolves to 127.0.0.1 on host (/etc/hosts), to the host bridge inside the OpenShell sandbox — one config for all B7 mechanisms
   api_key: no-key-required
   context_length: 65536
   max_tokens: 4096
 custom_providers:
 - name: vLLM-local
-  base_url: http://localhost:8000/v1
+  base_url: http://host.openshell.internal:8000/v1  # resolves to 127.0.0.1 on host (/etc/hosts), to the host bridge inside the OpenShell sandbox — one config for all B7 mechanisms
 toolsets:
 - file
 - terminal
@@ -17,10 +17,12 @@ plugins:
   enabled:
   - qnoe_qcodes
   - teams_polling
+  - qnoe_files
+  - qnoe_authz
 agent:
   max_turns: 90
   gateway_timeout: 1800
-  tool_use_enforcement: false
+  tool_use_enforcement: true
   task_completion_guidance: true
   parallel_tool_call_guidance: true
   environment_probe: false
@@ -85,7 +87,7 @@ compression:
   threshold: 0.75
 tools:
   tool_search:
-    enabled: 'on'
+    enabled: 'off'
 platform_toolsets:
   teams_polling:
   - file

@@ -86,6 +86,11 @@ class TeamsPollingAdapter(BasePlatformAdapter):
         self._client_id = os.environ.get("TEAMS_CLIENT_ID", "")
         self._username = os.environ.get("TEAMS_USERNAME", "")
         self._password = os.environ.get("TEAMS_PASSWORD", "")
+        # Same-token dedup hook: the gateway's _adapter_credential_fingerprint
+        # scans token/bot_token/... to refuse a second poller on the same bot
+        # credential (all profiles share one). WITHOUT this line every profile
+        # starts its own poller and each Teams message gets N replies.
+        self.bot_token = self._username
 
         self._active_poll = int(extra.get("poll_interval_active", DEFAULT_ACTIVE_POLL))
         self._idle_poll = int(extra.get("poll_interval_idle", DEFAULT_IDLE_POLL))
@@ -255,8 +260,10 @@ class TeamsPollingAdapter(BasePlatformAdapter):
             message_id=msg_id,
         )
 
-        event = MessageEvent()
-        event.text = text
+        # MessageEvent is a dataclass whose first field `text` is required —
+        # MessageEvent() with no args raises TypeError and poisons the poll
+        # cycle (every poll retries the same message forever).
+        event = MessageEvent(text)
         event.message_type = MessageType.TEXT
         event.source = source
         event.message_id = msg_id
@@ -307,7 +314,12 @@ class TeamsPollingAdapter(BasePlatformAdapter):
     # -- BasePlatformAdapter interface ---------------------------------------
 
     async def connect(self) -> bool:
-        self._session = aiohttp.ClientSession()
+        # trust_env: honor HTTP(S)_PROXY + SSL_CERT_FILE from the environment.
+        # Required inside the OpenShell sandbox (B7-OS), where ALL egress goes
+        # through an injected L7 proxy and there is no direct DNS — aiohttp
+        # defaults to trust_env=False and would fail with "Temporary failure in
+        # name resolution". No-op outside the sandbox (no proxy env set).
+        self._session = aiohttp.ClientSession(trust_env=True)
         self._init_msal()
         try:
             await self._bootstrap()

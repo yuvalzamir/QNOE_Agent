@@ -391,11 +391,24 @@ get_run_metadata(
 
 ## B7 — Migrate back to NVIDIA OpenShell sandbox
 
+> **🔴 PROMOTED TO HIGH PRIORITY (2026-07-14):** red-team R4 proved the agent can write to lab files (read-only is SOUL-only, unenforced). Re-enabling this sandbox is the fix. See [[TODO]] + `redteam/BACKLOG.md` Round 2b. Gaps to close: add `/opt/qnoe-agent/repos` to the policy read_only list; add `localhost:8000` to the network policy.
+>
+> **✅ READ-ONLY ENFORCEMENT RESOLVED 2026-07-14 — via systemd, not OpenShell.** `qnoe-hermes.service` drop-in `50-b7-readonly.conf` (mount-namespace `ReadOnlyPaths`/`InaccessiblePaths`) now physically blocks all writes to repos / /ICFO / config and hides `secrets/`; verified by the `qnoe-b7-test.service` probe (19/19 PASS). Both policy gaps above were also closed in `sandbox-policy.yaml`. **What remains of B7 is only the OpenShell migration itself** — its added value over the systemd fix is network L7 inspection + credential scoping (needed for Phase 2 T2–T4), not read-only enforcement. Demoted back to normal priority.
+
 **What:** Phase 1 bypasses OpenShell and uses plain `docker run` because OpenShell v0.0.59 silently ignores user volume mounts (`--driver-config-json` Docker mounts are marked "Experimental" and not implemented for the Docker driver). Once NVIDIA ships a version that supports volume passthrough, migrate back to OpenShell for its network L7 inspection, credential scoping, and JWT-based sandbox auth.
 
 **Why:** OpenShell provides policy enforcement layers (network filtering, credential isolation) that plain Docker doesn't. These matter for Phase 2 (T2–T4 write access) where the agent can modify shared resources.
 
-**Trigger:** Monitor OpenShell releases for Docker driver mount support. Check release notes at each NVIDIA DGX software update.
+**Trigger:** Monitor OpenShell releases for Docker driver mount support. Check release notes at each NVIDIA DGX software update. *(Re-checked 2026-07-14: still 0.0.59, mounts still experimental/K8s-only — blocked.)*
+
+> **🟢 UNBLOCKED (2026-07-14, web check):** current OpenShell releases (latest **v0.0.82**, 2026-07-13) support Docker-driver **volume/bind/tmpfs mounts** via `--driver-config-json '{"docker":{"mounts":[...]}}'`, gated by `[openshell.drivers.docker] enable_bind_mounts = true` in `gateway.toml` (bind mounts default `read_only: true`; SELinux labels since v0.0.76). Our existing `launch_sandbox.sh` JSON already matches the now-implemented schema. Path: upgrade the DGX deb 0.0.59→latest (arm64 on GitHub releases; nothing in production uses openshell today, so upgrade is low-risk), set `enable_bind_mounts`, expect a compat pass over policy YAML/CLI (23 releases of drift; e.g. v0.0.74 rejects whitespace in mount fields). NVIDIA's own docs warn bind mounts "can negate OpenShell controls" — we deliberately accept that: our mounts ARE the policy (ro flags per `config/sandbox-policy.yaml`), and we still gain landlock, the sandbox user, L7 network policies, and the audit trail. Docs: https://docs.nvidia.com/openshell/reference/sandbox-compute-drivers · https://github.com/NVIDIA/OpenShell/releases
+>
+> **✅ B7 CLOSED — EXECUTED 2026-07-14 (same day):** OpenShell v0.0.82 migration done in one session; `qnoe-hermes-sandbox.service` is production (enabled at boot), systemd unit retained as rollback. Full record: [[memory/decisions#D18]], [[memory/infrastructure]] §B7-OS, `memory/mistakes.md` M50/M51. Remaining hardening (new backlog items, NOT blockers): dedicated sandbox uid (identity isolation), OpenShell inference proxy (`local-vllm` → `https://inference.local/v1`) for LLM-path audit/credential scoping, retire the systemd drop-in after weeks of stability.
+
+**Migration plan + estimates (2026-07-14, user wants off systemd):**
+1. **De-lock-in (DONE 2026-07-14):** `config/sandbox-policy.yaml` is the single source of truth for the confinement contract; `scripts/b7_probe.sh` is the mechanism-agnostic acceptance test (runs inside any confinement). The only systemd-specific artifacts are the drop-in + probe launcher unit — both disposable. Gateway code has zero systemd references; `start_hermes.sh` credential chain already works under systemd/docker/bare.
+2. **Interim, available now — plain Docker (~1–2 days + verification day):** rebuild image for the Hermes runtime (arm64, match hermes-venv python), `docker run` with ro binds per the policy, rw volumes memory/logs/hermes, `--env-file` for teams.env, tmpfs /tmp, run as 1001. Buys immutable code view + identity isolation + an egress hook. Domain-level egress (graph.microsoft.com) needs an L7 proxy: **+1 day**, else coarse L3/L4 only.
+3. **Target — OpenShell (~2–3 days once NVIDIA ships Docker-driver mounts):** step 2's image + mount map carry over; add landlock policy wiring, OpenShell network policies (the L7 part replaces the proxy), JWT/gateway auth, full re-verification.
 
 **Tasks:**
 - [ ] Monitor OpenShell releases for volume mount support in the Docker driver

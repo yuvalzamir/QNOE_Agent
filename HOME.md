@@ -1,5 +1,5 @@
 # HOME — Claude Code Memory Index
-*Last updated: 2026-07-10*
+*Last updated: 2026-07-14 (B7 systemd sandbox)*
 
 > **Purpose:** Persistent memory for Claude Code working on the QNOE Lab Agent project.
 > Start every session here. Follow links to topic files as needed.
@@ -47,12 +47,18 @@
 | [[CONTEXT_EXECUTION_PLAN]] | Hand-off plan for roadmap steps 1-3 (vLLM 64K+fp8, toolset slimming, Provence) — executed 2026-07-09/10 |
 | [[GPT_OSS_CUTOVER_PLAN]] | Hand-off plan for the production cutover to gpt-oss-120b via llama.cpp — executed 2026-07-10 |
 | [[GPT_OSS_PILOT_PLAN]] | Pilot plan for gpt-oss-120b — vLLM path FAILED (M39/M41); llama.cpp path won → see [[GPT_OSS_CUTOVER_PLAN]] |
+| [[USER_GUIDE]] | Plain-language guide for lab members (find files, look up measurement runs) — WIP |
 | [[MVP_VERIFICATION_PLAN]] | The 4 remaining MVP-1 acceptance tests (routing, RAG-paper, /switch recast, /help recast) — pre-declaration checklist |
+| `redteam/BACKLOG.md` | Red-team harness findings log (R1-R4, M47) — the adversarial test loop's memory |
 | [[MEM0_INTEGRATION]] | Program to add per-user Mem0 memory inside `qnoe_rag` (see [[memory/decisions#D13]]) |
 | [[REPO_MAPPING]] | Repo → Qdrant collection mapping |
 | [[WATCHER_PLAN]] | SMB3 watcher daemon design |
 
 ## Active Workstream
 
-**MVP-1 DECLARED (2026-07-10)** — all rescoped acceptance criteria pass (see [[SETUP_LOG]] declaration section). Stack: gpt-oss-120b via llama.cpp (4×64K), 3 Hermes profiles, hybrid RAG + Mem0 + QCoDeS registry grounding, T0/T1 read-only. Verification round surfaced and fixed M44-M46 (incl. Mem0 memory poisoning).
-Next: Phase 2 planning ([[PHASE2_BACKLOG]] — B8/B9/B10 first candidates), ride-along re-tests in [[TODO]], PPTX Gantt before PI presentation.
+**MVP-1 DECLARED (2026-07-10)** — all rescoped acceptance criteria pass (see [[SETUP_LOG]] declaration section). Stack: gpt-oss-120b via llama.cpp (4×64K), 3 Hermes profiles, hybrid RAG + Mem0 + QCoDeS registry grounding, T0/T1 read-only.
+
+**Red-team loop (2026-07-14)** — built a repeatable adversarial harness (`redteam/`, findings in `redteam/BACKLOG.md`). Rounds 1-2 found+fixed: R1/R2 tool-selection (Tool Search now OFF → qcodes tools resident; `tool_use_enforcement` back true), **M47 mass Mem0 poisoning** (purged 40+ pre-fix confabulated facts), R3 calibration, R4 read-only. R2 residual (~60% "latest sweep" reliability, gpt-oss intermittency) DEFERRED. Injection/refusal/attribution/run-existence confirmed solid.
+Next: re-verify R3/R4, add fresh probe classes; Phase 2 ([[PHASE2_BACKLOG]] B8/B9/B10); PPTX Gantt before PI presentation.
+
+**B7-OS: OpenShell sandbox IS PRODUCTION (2026-07-14 evening)** — same-day supersession of the systemd drop-in ([[memory/decisions#D18]] over D17): user rejected systemd's cons, OpenShell v0.0.82 fixed the bind-mount blocker, full migration executed + verified in one session (probe 24/24 in-sandbox; Teams/Mem0/RAG/qcodes checks passed; R4 perm-write physically EROFS-blocked with model attempting; failure drills passed). `qnoe-hermes-sandbox.service` enabled at boot; old unit = one-command rollback. Traps + lessons: `memory/mistakes.md` M50 (live↔repo drift clobbered hotfixes) + M51 (five OpenShell runtime traps). Soak pending: nightly cron visibility next morning, SharePoint query. Details: [[memory/infrastructure]] §B7-OS.

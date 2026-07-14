@@ -675,3 +675,24 @@ python -m agent.ingest.ingest_all --force-ext .pdf
 ├── Dockerfile          # Agent sandbox image
 └── launch_sandbox.sh   # Manual sandbox test script
 ```
+
+## B7-OS: Hermes gateway in the OpenShell sandbox (since 2026-07-14)
+
+- **Production unit:** `qnoe-hermes-sandbox.service` (enabled). Start/stop via systemctl only;
+  it wraps `openshell sandbox create` and ExecStopPost deletes the container.
+- **Rollback to systemd mechanism:** `sudo systemctl start qnoe-hermes` (Conflicts= stops the
+  sandbox unit). Flip back: `sudo systemctl start qnoe-hermes-sandbox`.
+- **Verify enforcement:** `sudo systemctl start qnoe-b7-sandbox-test` → `logs/b7_probe.log`
+  all-PASS (24 checks). Systemd-mechanism probe: `qnoe-b7-test`.
+- **Rebuild image** (only when OS libs change): `mkdir -p /tmp/qnoe-hermes-build && cp
+  Dockerfile.hermes /tmp/qnoe-hermes-build/Dockerfile && docker build -t qnoe-hermes:0.1
+  /tmp/qnoe-hermes-build` — NEVER build with /opt/qnoe-agent as context (streams models/venvs).
+- **teams.env rotation:** file is bind-mounted by inode → after rotating secrets/teams.env run
+  `sudo systemctl restart qnoe-hermes-sandbox`.
+- **Audit/L7 denials:** `sudo systemctl status openshell-gateway --no-pager -n 200 | grep -iE
+  '403|denied'`; gateway state db at `~qnoe-ai/.local/state/openshell/gateway/openshell.db`.
+- **Confinement contract:** `config/sandbox-policy.yaml` (single source of truth) +
+  `config/hermes-sandbox-mounts.json`. New writable/readable path ⇒ update policy + mounts +
+  `scripts/b7_probe.sh` together, redeploy, re-run both probes.
+- **Gateway restart choreography:** restarting `openshell-gateway` kills the sandbox relay; the
+  unit self-heals in ~60s (expected). Expect one auto-resume echo reply after any restart.

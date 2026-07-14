@@ -50,12 +50,14 @@ MAX_LIMIT = 100
 FIND_FILE_SCHEMA = {
     "name": "find_file",
     "description": (
-        "Find a file by name or folder path across BOTH the lab CIFS data "
-        "server and SharePoint. Use when the user asks where a file is, or to "
-        "locate a document/notebook/script by (part of) its name. Matches a "
-        "case-insensitive substring against the file name and its folder path. "
-        "Returns each match's location: a filesystem path for CIFS files, a "
-        "SharePoint web link for SharePoint files. Searches indexed files only."
+        "Locate a file/document/notebook/script by (part of) its name or folder "
+        "path. THIS IS THE ONLY WAY TO FIND SHAREPOINT DOCUMENTS: SharePoint files "
+        "are NOT on the local filesystem (so search_files/terminal/list_directory "
+        "cannot see them), but they ARE indexed here — this tool returns their "
+        "web link. Always use find_file for any 'where is X' / 'find the document "
+        "about X' / locate request, covering BOTH the lab CIFS server and "
+        "SharePoint. Case-insensitive substring match on file name + folder path. "
+        "Indexed files only."
     ),
     "parameters": {
         "type": "object",

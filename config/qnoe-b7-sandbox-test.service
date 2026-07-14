@@ -1,0 +1,16 @@
+# B7-OS verification probe — runs b7_probe.sh inside a throwaway OpenShell
+# sandbox with the SAME policy + mounts as the production gateway sandbox.
+# Run:    sudo systemctl start qnoe-b7-sandbox-test.service
+# Result: /opt/qnoe-agent/logs/b7_probe.log (all lines must be PASS)
+# (Counterpart of qnoe-b7-test.service, which probes the systemd mechanism.)
+[Unit]
+Description=B7-OS verification probe (OpenShell sandbox confinement)
+After=docker.service openshell-gateway.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=qnoe-ai
+Group=qnoe-ai
+ExecStart=/bin/bash /opt/qnoe-agent/scripts/run_b7_probe_sandbox.sh
+TimeoutStartSec=300

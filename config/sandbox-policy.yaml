@@ -1,39 +1,118 @@
+  # ── SINGLE SOURCE OF TRUTH for the agent's confinement contract ──────────
+  # Any enforcement mechanism (systemd drop-in 50-b7-readonly.conf; OpenShell
+  # sandbox per B7-OS migration) must implement THIS file, and
+  # scripts/b7_probe.sh is the mechanism-agnostic acceptance test (run it
+  # inside the confinement; every line must PASS). When paths change here,
+  # update the active mechanism + the probe together. See memory/decisions
+  # D17/D18 and memory/infrastructure §B7 (incl. the /mnt/noe allowlist-drift
+  # lesson).
+  #
+  # Container semantics (OpenShell / docker — mount map in
+  # config/hermes-sandbox-mounts.json):
+  #   inaccessible  => NOT MOUNTED (absence beats unreadable)
+  #   read_only entries the gateway never reads (/mnt/noe, /ICFO/smbhome,
+  #     /home/yzamir outside qnoe_server_data) => NOT MOUNTED
+  #   read_only/read_write => explicit ro/rw bind mounts, target == source path
+  #     (hermes-venv shebangs are absolute-path-coupled)
   version: 1
 
   filesystem_policy:
+    # OpenShell forces its workspace (/sandbox) as the process cwd; without
+    # this, landlock denies cwd access and anything resolving relative paths
+    # dies with EACCES — found live as "RAG prefetch failed: Permission
+    # denied: '/sandbox'" (agent then answered without RAG).
+    include_workdir: true
     read_only:
+      - /opt/qnoe-agent            # the top dir itself (container cwd) — landlock denies even
+                                   # traversal/grep of it when only subdirs are listed; in-container
+                                   # the subtree is just the mounted subdirs below + empty image dir.
+                                   # secrets/ stays invisible (never mounted); rw entries below win.
       - /opt/qnoe-agent/models
       - /opt/qnoe-agent/config
-      - /opt/qnoe-agent/secrets
+      - /opt/qnoe-agent/scripts     # entry script + b7_probe must exist in-container
       - /opt/qnoe-agent/venv
+      - /opt/qnoe-agent/hermes-venv
       - /opt/qnoe-agent/agent
+      - /opt/qnoe-agent/repos       # B7 gap: R4 write target — RAG/qcodes read these, never write
+      - /opt/qnoe-agent/skills      # Phase 1: read-only (skill WRITES are a Phase-2 T2+ feature)
       - /ICFO/groups/NOE
-      - /ICFO/smbhome/yzamir
+      - /ICFO/smbhome/yzamir            # container: not mounted
+      - /mnt/noe                        # container: not mounted. 2nd CIFS mount of the NOE share (uid=qnoe-ai) — was a full systemd bypass, redteam R4 follow-up
+      - /home/yzamir/qnoe_server_data   # qcodes registry (sqlite journal_mode=delete — ro readers need no side files; do NOT switch to WAL)
+      - /run/teams.env                  # container-only: the teams.env single-file bind target — landlock
+                                        # restricts READS too, so the bind must also be policy-listed
+                                        # (path doesn't exist under systemd — harmless there)
+    # INACCESSIBLE (not a schema field — OpenShell only knows read_only/read_write;
+    # these are enforced by NOT appearing in the mount map, and under systemd by
+    # InaccessiblePaths=):
+    #   /opt/qnoe-agent/secrets   — dir never mounted; ONLY secrets/teams.env goes in
+    #                               as a single-file ro bind -> /run/qnoe/teams.env
+    #                               ($TEAMS_ENV_FILE). systemd: InaccessiblePaths +
+    #                               LoadCredential.
+    #   /home/qnoe-ai/.local      — never mounted: holds OpenShell's OWN gateway
+    #                               TLS/JWT keys; mounting would let the confined
+    #                               agent steal them
+    #   /home/qnoe-ai/.profile    — never mounted: poisoning it would run code
+    #                               unconfined at next gateway start
     read_write:
-      - /opt/qnoe-agent/memory
+      - /dev/null                   # landlock denies write-open on device nodes outside read_write —
+                                    # without this, EVERY `>/dev/null` redirect in the gateway's
+                                    # subprocesses (and b7_probe.sh) fails (found Stage 3, 2026-07-14)
+      - /opt/qnoe-agent/memory      # Mem0 + SQLite episodic + fastembed_cache (R9: BM25 cache must be persistent, not /tmp)
       - /opt/qnoe-agent/logs
-      - /opt/qnoe-agent/skills
-      - /ICFO/groups/NOE/ai_agent
+      - /opt/qnoe-agent/hermes      # session state, profiles, plugins (HERMES_HOME)
+      - /home/qnoe-ai/.mem0         # Mem0 history db
+      - /home/qnoe-ai/.cache        # fastembed/transformers caches
+      # NOTE: under systemd the whole /home/qnoe-ai is rw (coarse); the container
+      # narrows it to .mem0/.cache — rest of $HOME is container-local (useradd -m)
+      # and evaporates on restart by design.
+      # NOTE Phase 1: /ICFO/groups/NOE/ai_agent and skills/ are read-only
+      # (were rw in the June 2026 LangGraph-era policy); restore rw in Phase 2 (T2+).
 
   landlock:
     compatibility: best_effort
 
   process:
-    run_as_user: sandbox
-    run_as_group: sandbox
+    # Numeric uid (supported since OpenShell v0.0.76) matching host qnoe-ai —
+    # all rw state (memory/, logs/, hermes/, ~/.mem0) is owned by 1001 and
+    # shared with host cron jobs. Dedicated-uid identity isolation is a
+    # Stage-7 hardening item (needs group-write rework on shared state).
+    run_as_user: 1001
+    run_as_group: 1001
 
   network_policies:
+    llm:
+      name: llamacpp-local
+      endpoints:
+        # host view: localhost:8000. In-sandbox: ALL egress goes through
+        # OpenShell's injected L7 proxy (HTTP_PROXY=10.200.0.1:3128), which
+        # matches endpoints BY HOSTNAME. host.openshell.internal is the
+        # sandbox-provided alias for the host (/etc/hosts -> 172.18.0.1).
+        # Raw-IP endpoints get 502 from the proxy — do not use them.
+        - host: host.openshell.internal
+          port: 8000
+          protocol: rest
+          enforcement: enforce
+          access: read-write
+      binaries:
+        - path: /opt/qnoe-agent/hermes-venv/bin/python3
+        - path: /usr/local/bin/python3.12   # symlink-resolved interpreter inside the image
+        - path: /usr/bin/curl               # b7_probe endpoint checks
+
     qdrant:
       name: qdrant-local
       endpoints:
-        - host: 172.18.0.1
+        # host view: localhost:6333 (published 0.0.0.0). Same proxy-by-hostname
+        # rule as llm above.
+        - host: host.openshell.internal
           port: 6333
           protocol: rest
           enforcement: enforce
           access: read-write
-          allowed_ips: ["172.16.0.0/12"]
       binaries:
-        - path: /opt/qnoe-agent/venv/bin/python
+        - path: /opt/qnoe-agent/hermes-venv/bin/python3
+        - path: /usr/local/bin/python3.12
+        - path: /usr/bin/curl
 
     github:
       name: github-api
@@ -44,7 +123,8 @@
           enforcement: enforce
           access: read-only
       binaries:
-        - path: /opt/qnoe-agent/venv/bin/python
+        - path: /opt/qnoe-agent/hermes-venv/bin/python3
+        - path: /usr/local/bin/python3.12
         - path: /usr/bin/git
 
     github_objects:
@@ -65,5 +145,14 @@
           protocol: rest
           enforcement: enforce
           access: read-write
+        # ROPC token auth (TEAMS_USERNAME/PASSWORD grant) authenticates here,
+        # NOT at graph.microsoft.com — invisible under systemd (no network
+        # enforcement), fatal under L7 enforce if missing.
+        - host: login.microsoftonline.com
+          port: 443
+          protocol: rest
+          enforcement: enforce
+          access: read-write
       binaries:
-        - path: /opt/qnoe-agent/venv/bin/python
+        - path: /opt/qnoe-agent/hermes-venv/bin/python3
+        - path: /usr/local/bin/python3.12

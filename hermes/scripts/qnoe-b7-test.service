@@ -1,0 +1,19 @@
+# Standing B7 verification probe — runs b7_probe.sh under the EXACT same
+# confinement directives as qnoe-hermes.service (keep the two in sync!).
+# Run:    sudo systemctl start qnoe-b7-test.service
+# Result: /opt/qnoe-agent/logs/b7_probe.log (all lines must be PASS)
+[Unit]
+Description=B7 sandbox verification probe (same confinement as qnoe-hermes)
+
+[Service]
+Type=oneshot
+User=qnoe-ai
+Group=qnoe-ai
+ExecStart=/bin/bash /opt/qnoe-agent/scripts/b7_probe.sh
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ReadOnlyPaths=/opt/qnoe-agent /ICFO /mnt/noe /home/yzamir
+ReadWritePaths=/opt/qnoe-agent/memory /opt/qnoe-agent/logs /opt/qnoe-agent/hermes
+InaccessiblePaths=/opt/qnoe-agent/secrets
+LoadCredential=teams.env:/opt/qnoe-agent/secrets/teams.env

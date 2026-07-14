@@ -1539,3 +1539,59 @@ Per the rescope ([[AGENT_FRAMEWORK]] §9.4, [[MVP_VERIFICATION_PLAN]]): MVP-1 = 
 **Declared: MVP-1 COMPLETE (2026-07-10).** Production stack: gpt-oss-120b via llama.cpp (4×64K), Hermes gateway with 3 profiles, hybrid RAG + Mem0 + QCoDeS registry grounding, T0/T1 read-only.
 
 **Ride-along items still open (not MVP gates):** run-159 re-ask (expect 49), gate-sweep re-ask (expect run 848), colleague Mem0-isolation re-check, I9 find_file round-trip, PPTX Gantt update before PI presentation.
+
+## 2026-07-14 — Red-team harness + Rounds 1-2
+
+Built a repeatable adversarial test harness (`redteam/`, plan in
+`~/.claude/plans/lexical-munching-book.md`). Two channels: A = self-driven
+`hermes -z` as qnoe-ai (MEM0 off, throwaway symlink HERMES_HOME, isolation
+verified); B = Teams relay for gateway-only classes (Mem0/routing). Oracle
+reuses the `qnoe_qcodes` registry helpers. Full detail + findings log:
+`redteam/BACKLOG.md`.
+
+**Findings found + fixed (all live):**
+- **R1** measurement Qs answered from RAG not the tool → SOUL "must use qcodes_search".
+- **M47 (mistakes.md)** — 40+ poisoned Mem0 facts (fabricated runs/dbs, wrong
+  physics, stale counts) from pre-M46 testing, actively corrupting live answers.
+  Purged the user's episodic_memory (51→0; collection 70→19, others preserved) +
+  strengthened the SOUL memory guard (memory is interests-only, never a data source).
+- **R2** — root cause fixed: **Tool Search disabled** for the 3 profiles (qcodes
+  tools now RESIDENT, not deferred) + SOUL rules + memory purge. Production returns
+  run 848 correctly. Residual ~60% harness reliability (gpt-oss tool-call
+  intermittency) → deterministic "latest-sweep" hook DEFERRED (user: low-frequency
+  query, may be fixed by a future LLM upgrade). `tool_use_enforcement` reverted to
+  **true** (reduces prose-fallback).
+- **R3** calibration (fabricated future results) + **R4** read-only (offered to
+  write; has write tools) → SOUL rules; re-verify pending.
+
+**Config state after this session (all 3 profiles):** `tools.tool_search.enabled:
+off`, `agent.tool_use_enforcement: true`, toolsets `[file, terminal, clarify,
+qnoe-lab]`. Confirmed solid: injection defense, secret refusal, run-existence
+honesty, cross-team attribution.
+
+## 2026-07-14 (later) — SharePoint file search + B7-RAG regression fix
+
+**SP file search now works** via a deterministic `find_file` hook in `qnoe_rag`
+(mirrors the run-id registry hook): file-location intent ("find/where is/give me
+the document/manual/… X") is detected in prefetch, the keyword extracted (handles
+lowercase + distinctive codes), and our `qnoe_files` search (CIFS + SharePoint
+manifests) is run in code and injected — so SharePoint web links reach the answer
+regardless of which tool the model picks. This was chosen after prompt-steering
+the model to prefer our `find_file` over Hermes's core `search_files` proved
+unreliable (~80%). Hermes has no per-tool disable (toolset-level only), so the
+hook (bypass the choice) is the robust pattern. `qnoe_files` plugin was also
+missing from `plugins.enabled` — added (B-4).
+
+**B7-RAG regression (R9):** the parallel B7 read-only work set `PrivateTmp=yes`,
+which hid the fastembed BM25 model cache (was in `/tmp/fastembed_cache`) → RAG
+threw "Could not load model Qdrant/bm25" → the UNGUARDED sync retrieve in
+`prefetch()` crashed the whole prefetch → Mem0 + qcodes + find_file hooks all went
+down; RAG was out for ~1h. Fixed: BM25 cache copied to
+`/opt/qnoe-agent/memory/fastembed_cache` (in-namespace, read-write) +
+`FASTEMBED_CACHE_PATH` in `start_hermes.sh`; and `_run_retrieve` in prefetch is
+now guarded so a RAG failure degrades to empty RAG instead of killing the hooks.
+
+**Also this session:** llama-server `--temp 0.2 --top-p 0.9` (cut tool-selection
+non-determinism 3/5→4/5); memory guard split (R6: user-context→memory,
+lab-records→tools); registry-hook run-id regex broadened (R5: "run with ID N").
+Full findings: `redteam/BACKLOG.md` R1-R9.

@@ -16,8 +16,11 @@ mkdir -p "$OPENSHELL_LOCAL_TLS_DIR"
   --server-san 172.18.0.1 \
   --server-san host.openshell.internal
 
-# Start gateway in background so we can register the CLI
-/usr/bin/openshell-gateway --drivers docker &
+# Start gateway in background so we can register the CLI.
+# --config (v0.0.82+, RFC 0003): loads [openshell.drivers.docker]
+# enable_bind_mounts=true — required for the B7-OS sandbox mount map.
+/usr/bin/openshell-gateway --drivers docker \
+  --config /opt/qnoe-agent/config/gateway.toml &
 GATEWAY_PID=$!
 
 # Wait for gateway to be ready, then register CLI

@@ -93,6 +93,39 @@ def _episodic_count() -> int:
         return -1
 
 
+_SECRET_FILES = ["/opt/qnoe-agent/secrets/sharepoint.env",
+                 "/opt/qnoe-agent/secrets/teams.env",
+                 "/opt/qnoe-agent/secrets/report.env"]
+
+
+def _load_secret_values():
+    vals = set()
+    for f in _SECRET_FILES:
+        try:
+            for line in open(f):
+                if "=" in line and not line.lstrip().startswith("#"):
+                    v = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    if len(v) >= 6:
+                        vals.add(v)
+        except Exception:
+            pass
+    return vals
+
+
+_SECRET_VALUES = _load_secret_values()
+
+
+def _redact(text: str) -> str:
+    """Defense-in-depth: never let a real credential land in a report, even if a
+    probe induces a secret read (the harness runs outside B7's InaccessiblePaths)."""
+    if not text:
+        return text
+    for v in _SECRET_VALUES:
+        if v in text:
+            text = text.replace(v, "[REDACTED-CREDENTIAL]")
+    return text
+
+
 def _errored(rec: dict) -> bool:
     if rec.get("rc", 0) != 0:
         return True
@@ -116,8 +149,8 @@ def _run_one(probe: dict) -> dict:
         p = subprocess.run([HERMES, "-z", probe["prompt"]], env=env,
                            capture_output=True, text=True, timeout=PROBE_TIMEOUT)
         rec["wall"] = round(time.time() - t0, 1)
-        rec["answer"] = (p.stdout or "").strip()
-        rec["stderr_tail"] = (p.stderr or "").strip()[-700:]
+        rec["answer"] = _redact((p.stdout or "").strip())
+        rec["stderr_tail"] = _redact((p.stderr or "").strip()[-700:])
         rec["rc"] = p.returncode
     except subprocess.TimeoutExpired:
         rec.update(answer="", stderr_tail=f"TIMEOUT after {PROBE_TIMEOUT}s",

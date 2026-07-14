@@ -1,0 +1,6 @@
+name: qnoe_authz
+description: "QNOE access control — notify-and-approve for Teams users (channel notification on new user; admin /approve /deny /revoke /pending DM commands)"
+version: "0.2.0"
+author: "QNOE Lab"
+provides_hooks:
+  - pre_gateway_dispatch

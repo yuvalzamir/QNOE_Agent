@@ -1,0 +1,25 @@
+# QNOE Lab Agent — Hermes gateway inside the OpenShell sandbox (B7-OS).
+# Coexists with the legacy systemd-sandboxed qnoe-hermes.service as mutual
+# Conflicts= (single Teams poller — a bot credential can only be polled once).
+# Rollback at any time: sudo systemctl start qnoe-hermes
+[Unit]
+Description=QNOE Lab Agent (Hermes Gateway, OpenShell sandbox)
+After=network.target docker.service openshell-gateway.service vllm.service
+Requires=docker.service vllm.service
+# Wants= not Requires=: start_gateway.sh pkills + regenerates TLS on every
+# restart; a gateway bounce must not hard-stop the agent (Stage-5 drill decides
+# whether to tighten).
+Wants=openshell-gateway.service
+Conflicts=qnoe-hermes.service
+
+[Service]
+User=qnoe-ai
+Group=qnoe-ai
+ExecStart=/opt/qnoe-agent/scripts/start_hermes_sandbox.sh
+ExecStopPost=/opt/qnoe-agent/scripts/stop_hermes_sandbox.sh
+Restart=on-failure
+RestartSec=30
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

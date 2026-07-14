@@ -84,13 +84,20 @@ MEM0_COLLECTION = "episodic_memory"
 MEM0_LLM_MODEL = os.environ.get("MEM0_LLM_MODEL", "hermes-3-70b")
 VLLM_BASE_URL = os.environ.get("VLLM_BASE_URL", "http://localhost:8000/v1")
 
+# Derive Mem0's Qdrant target from QDRANT_URL instead of hardcoding localhost:
+# inside the OpenShell sandbox (B7-OS) Qdrant is only reachable via
+# host.openshell.internal through the L7 proxy — a hardcoded localhost bypasses
+# the proxy (NO_PROXY) and dies with ECONNREFUSED (Mem0 add/search failed).
+from urllib.parse import urlparse as _urlparse
+_QDRANT_PARSED = _urlparse(QDRANT_URL)
+
 MEM0_CONFIG = {
     "vector_store": {
         "provider": "qdrant",
         "config": {
             "collection_name": MEM0_COLLECTION,
-            "host": "localhost",
-            "port": 6333,
+            "host": _QDRANT_PARSED.hostname or "localhost",
+            "port": _QDRANT_PARSED.port or 6333,
             "embedding_model_dims": 768,
         },
     },
@@ -339,7 +346,14 @@ QCODES_REGISTRY_DBS = [
     ),
     "/opt/qnoe-agent/memory/episodic.db",
 ]
-_RUN_ID_RE = re.compile(r"\brun[\s_#]*(\d{1,7})\b", re.IGNORECASE)
+# Matches run 159 / run_159 / run#159 / run159 AND "run with ID 159",
+# "run id 159", "run number 159", "run no. 159" (red-team R5, 2026-07-14 —
+# the narrow form missed "run with ID N" so the hook didn't fire and the
+# agent answered from RAG with a wrong count).
+_RUN_ID_RE = re.compile(
+    r"\brun[\s_]*(?:with[\s_]+)?(?:id|number|no\.?|#)?[\s_#:]*(\d{1,7})\b",
+    re.IGNORECASE,
+)
 _QCODES_HINT_RE = re.compile(
     r"qcodes|measur|dataset|\brun\b", re.IGNORECASE
 )
@@ -408,6 +422,130 @@ def _qcodes_registry_block(message: str) -> str:
         )
     lines.append("")
     return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Deterministic file-location hook (find_file)
+# ---------------------------------------------------------------------------
+# The model reliably prefers Hermes's local `search_files` over our `find_file`
+# for "where is X" questions, so it never reaches SharePoint (which is not on the
+# filesystem, only in the manifest index). This hook runs our find_file search in
+# code and injects the results, exactly like the run-id registry block — so the
+# answer (incl. SharePoint web links) is in context regardless of tool choice.
+
+_FIND_INTENT_RE = re.compile(
+    r"\b(find|locate|where\s+(?:is|are|can|to)|search\s+for|look\s+for|"
+    r"path\s+to|which\s+(?:file|doc|document|notebook)|give\s+me|show\s+me|"
+    r"get\s+me|do\s+(?:we|you)\s+have|is\s+there|pull\s+up|provide)\b",
+    re.IGNORECASE,
+)
+_FILE_NOUN_RE = re.compile(
+    r"\b(files?|documents?|documentation|docs?|notebooks?|scripts?|papers?|"
+    r"manuals?|reports?|presentations?|slides?|readmes?|spreadsheets?|"
+    r"datasheets?|specs?|guides?|"
+    r"\.(?:py|ipynb|docx?|pdf|pptx?|xlsx?|md|db|ya?ml|txt|csv|json|h5))\b",
+    re.IGNORECASE,
+)
+_FIND_STOP = {
+    "the", "a", "an", "of", "about", "for", "on", "in", "to", "setup", "document",
+    "documentation", "file", "files", "find", "locate", "where", "is", "are",
+    "can", "which", "notebook", "notebooks", "script", "scripts", "paper",
+    "papers", "manual", "manuals", "doc", "docs", "report", "reports",
+    "presentation", "presentations", "slide", "slides", "spec", "specs", "guide",
+    "guides", "datasheet", "please", "me", "give", "show", "get", "do", "we",
+    "you", "have", "there", "pull", "up", "provide", "and", "or", "that",
+    "contains", "containing", "named", "called", "any", "our", "group", "lab",
+    "with", "sharepoint", "cifs", "server", "use", "find_file", "search", "need",
+    "want", "related",
+}
+
+
+@lru_cache(maxsize=1)
+def _files_mod():
+    """Load the sibling qnoe_files plugin (stdlib-only) to reuse its search."""
+    import importlib.util
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "qnoe_files", "__init__.py",
+    )
+    spec = importlib.util.spec_from_file_location("qnoe_files_hook", path)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def _extract_terms(message: str) -> list:
+    q = re.findall(r'["“‘\']([^"”’\']{2,60})["”’\']', message)
+    if q:
+        return [t.strip() for t in q[:2]]
+    terms = re.findall(
+        r'\b([\w.-]+\.(?:py|ipynb|docx?|pdf|pptx?|xlsx?|md|db|ya?ml|txt|csv|json|h5))\b',
+        message, re.IGNORECASE,
+    )
+    # distinctive codes / CamelCase / ALLCAPS / alphanumeric device IDs
+    terms += re.findall(r'\b([A-Za-z]*\d[\w-]*|[A-Z][a-z]+[A-Z]\w*|[A-Z]{2,}\w*)\b', message)
+    out = []
+    for t in terms:
+        if t.lower() in _FIND_STOP or len(t) < 3:
+            continue
+        if t not in out:
+            out.append(t)
+    if out:
+        return out[:2]
+    # Fallback: the distinctive lowercase subject word(s) — e.g. "give me the
+    # documentation of spectromag" -> "spectromag" (users type lowercase).
+    words = [w for w in re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,}", message)
+             if w.lower() not in _FIND_STOP]
+    words.sort(key=len, reverse=True)
+    return words[:2]
+
+
+def _find_file_block(message: str) -> str:
+    if not message or not (_FIND_INTENT_RE.search(message) and _FILE_NOUN_RE.search(message)):
+        return ""
+    terms = _extract_terms(message)
+    if not terms:
+        return ""
+    try:
+        fm = _files_mod()
+    except Exception as exc:
+        logger.warning("find_file hook: module load failed: %s", exc)
+        return ""
+    results = []
+    for term in terms:
+        try:
+            results.extend(fm._search_sharepoint(term, 8))
+            results.extend(fm._search_cifs(term, 8))
+        except Exception as exc:
+            logger.warning("find_file hook: search failed for %r: %s", term, exc)
+    seen, uniq = set(), []
+    for r in results:
+        link = r.get("link", "")
+        if link and link not in seen:
+            seen.add(link)
+            uniq.append(r)
+    label = " / ".join(terms)
+    if not uniq:
+        return (
+            f"## File-location lookup (authoritative — find_file index, covers "
+            f"SharePoint) for '{label}': no indexed file matches. Tell the user no "
+            f"indexed file matches that name; do NOT claim SharePoint is "
+            f"inaccessible.\n\n"
+        )
+    sp = [r for r in uniq if r["source"] == "sharepoint"]
+    cifs = [r for r in uniq if r["source"] == "cifs"]
+    out = [
+        f"## File-location lookup (authoritative — find_file index, covers "
+        f"SharePoint) for '{label}':",
+        "Report these to the user; SharePoint web links are valid even though "
+        "SharePoint is not on the filesystem.",
+    ]
+    for r in (sp + cifs)[:10]:
+        tag = "SharePoint" if r["source"] == "sharepoint" else "CIFS"
+        out.append(f"- [{tag}] {r['link']}")
+    if len(uniq) > 10:
+        out.append(f"- …and {len(uniq) - 10} more — ask the user to narrow.")
+    return "\n".join(out) + "\n\n"
 
 
 # ---------------------------------------------------------------------------
@@ -533,9 +671,16 @@ class QnoeRagProvider(MemoryProvider):
             self._prefetch_result = ""
 
         if not result:
-            # No prefetch available — do synchronous retrieval
-            chunks = _run_retrieve(query, self._collections)
-            result = _format_chunks(chunks)
+            # No prefetch available — do synchronous retrieval. Guarded: a RAG
+            # failure (e.g. embedding model unavailable) must NOT crash prefetch,
+            # or it takes the Mem0/qcodes/find_file hooks down with it (observed
+            # 2026-07-14 when B7's PrivateTmp hid the fastembed BM25 cache).
+            try:
+                chunks = _run_retrieve(query, self._collections)
+                result = _format_chunks(chunks)
+            except Exception as e:
+                logger.warning("RAG retrieve failed (degrading to empty RAG): %s", e)
+                result = ""
 
         rag_block = f"## RAG Context\n{result}" if result else ""
 
@@ -546,6 +691,13 @@ class QnoeRagProvider(MemoryProvider):
             qcodes_block = _qcodes_registry_block(query)
         except Exception as e:
             logger.warning("QCoDeS registry hook failed: %s", e)
+
+        # Deterministic file-location hook (find_file index, covers SharePoint).
+        findfile_block = ""
+        try:
+            findfile_block = _find_file_block(query)
+        except Exception as e:
+            logger.warning("find_file hook failed: %s", e)
 
         # Per-user Mem0 facts, injected ahead of RAG. Must never break a turn.
         mem_block = ""
@@ -563,15 +715,16 @@ class QnoeRagProvider(MemoryProvider):
         # Per-turn injection observability (added 2026-07-10 after a live turn
         # denied knowledge of a fact that ranked #1 in offline Mem0 search).
         logger.info(
-            "prefetch inject: mem_facts=%d qcodes_block=%s rag_chars=%d session=%s query=%r",
+            "prefetch inject: mem_facts=%d qcodes_block=%s findfile_block=%s rag_chars=%d session=%s query=%r",
             mem_block.count("\n- ") + (1 if mem_block.startswith("- ") else 0),
             bool(qcodes_block),
+            bool(findfile_block),
             len(rag_block),
             session_id,
             (query or "")[:80],
         )
 
-        return (mem_block + qcodes_block + rag_block) or ""
+        return (mem_block + qcodes_block + findfile_block + rag_block) or ""
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         def _run():

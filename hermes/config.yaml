@@ -1,13 +1,13 @@
 model:
   default: /opt/qnoe-agent/models/hermes-3-70b-awq
   provider: custom
-  base_url: http://localhost:8000/v1
+  base_url: http://host.openshell.internal:8000/v1  # resolves to 127.0.0.1 on host (/etc/hosts), to the host bridge inside the OpenShell sandbox — one config for all B7 mechanisms
   api_key: no-key-required
   context_length: 65536
   max_tokens: 4096
 custom_providers:
 - name: vLLM-local
-  base_url: http://localhost:8000/v1
+  base_url: http://host.openshell.internal:8000/v1  # resolves to 127.0.0.1 on host (/etc/hosts), to the host bridge inside the OpenShell sandbox — one config for all B7 mechanisms
 toolsets:
 - file
 - terminal

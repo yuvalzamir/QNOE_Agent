@@ -1,0 +1,39 @@
+# qnoe-hermes — base image for the Hermes gateway inside the OpenShell sandbox.
+# Build (isolated context — NEVER build from /opt/qnoe-agent, it would stream
+# models+venvs as context):
+#   mkdir -p /tmp/qnoe-hermes-build && cp Dockerfile.hermes /tmp/qnoe-hermes-build/Dockerfile
+#   docker build -t qnoe-hermes:0.1 /tmp/qnoe-hermes-build
+# Everything (code, venvs, models, state) is bind-mounted at runtime per
+# config/hermes-sandbox-mounts.json — rebuild only when OS libs change.
+#
+# glibc note: python:3.12-slim = Debian bookworm glibc 2.36 vs host Ubuntu
+# 24.04 glibc 2.39. manylinux wheels are fine; if any hermes-venv wheel was
+# built against host glibc the Stage-2 import gauntlet will catch it — then
+# switch base to ubuntu:24.04 + apt python3.12 (native /usr/bin/python3.12,
+# drop the symlink below).
+FROM python:3.12-slim
+
+# Runtime libs for hermes-venv wheels on arm64: torch-cpu (libgomp), onnxruntime/
+# fastembed, sentence-transformers (openblas); git for repo tools; curl for the
+# b7 probe endpoint checks.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl git ca-certificates iproute2 \
+        libgomp1 libstdc++6 libsqlite3-0 libopenblas0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Host venvs point at host interpreter paths; make both resolve here:
+#   old venv:    bin/python3 -> /usr/bin/python3.12
+#   hermes-venv: bin/python3 -> /usr/bin/python3
+RUN ln -s /usr/local/bin/python3.12 /usr/bin/python3.12 && \
+    ln -s /usr/local/bin/python3.12 /usr/bin/python3
+
+# Match host qnoe-ai uid/gid 1001 so the rw binds (memory/, logs/, hermes/,
+# ~/.mem0, ~/.cache) are writable. Dedicated-uid identity isolation is a
+# Stage-7 hardening item (see config/sandbox-policy.yaml process section).
+RUN groupadd -g 1001 qnoe-ai && \
+    useradd -m -u 1001 -g qnoe-ai -d /home/qnoe-ai qnoe-ai
+
+RUN install -d -o qnoe-ai -g qnoe-ai /opt/qnoe-agent
+
+USER qnoe-ai
+WORKDIR /opt/qnoe-agent
