@@ -21,8 +21,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgomp1 libstdc++6 libsqlite3-0 libopenblas0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Host venvs symlink python3 -> /usr/bin/python3.12; make that path resolve here.
-RUN ln -s /usr/local/bin/python3.12 /usr/bin/python3.12
+# Host venvs point at host interpreter paths; make both resolve here:
+#   old venv:    bin/python3 -> /usr/bin/python3.12
+#   hermes-venv: bin/python3 -> /usr/bin/python3
+RUN ln -s /usr/local/bin/python3.12 /usr/bin/python3.12 && \
+    ln -s /usr/local/bin/python3.12 /usr/bin/python3
 
 # Match host qnoe-ai uid/gid 1001 so the rw binds (memory/, logs/, hermes/,
 # ~/.mem0, ~/.cache) are writable. Dedicated-uid identity isolation is a
