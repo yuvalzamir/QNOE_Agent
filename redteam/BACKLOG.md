@@ -236,3 +236,11 @@ was in the test harness, not the agent. Standing regressions to keep: tool relia
 ### R8 — model believed SharePoint was inaccessible (find_file selection) (2026-07-14)
 - B-4: find_file IS loaded (diag list: 13 tools incl. find_file) but the model used search_files and told the user SharePoint docs are "outside paths I can read" — even when told to use find_file. Root cause: the SOUL "Allowed paths only ... decline files outside the allowed roots" framing made the model classify SharePoint as off-limits, overriding the (lower) find_file steer.
 - Fix: (1) SOUL — added "SharePoint is reachable, never decline it" right in the allowed-paths section (SP not mounted but indexed; use find_file; content in RAG). (2) find_file tool description — "THE ONLY WAY TO FIND SHAREPOINT DOCUMENTS ... search_files cannot see them". All 3 profiles. Re-verify: "find the SpectroMag document" -> find_file call returning a SharePoint URL.
+
+### R4 follow-up (2026-07-14, same day): /mnt/noe bypass found + closed
+- While enumerating cons of the systemd approach: `/mnt/noe` is a SECOND CIFS mount of the same
+  //files/groups/NOE share, mounted `uid=1001,forceuid` (= qnoe-ai owns everything) — it was rw
+  inside the gateway namespace, fully bypassing the `/ICFO` ro mount. Added `/mnt/noe` to
+  `ReadOnlyPaths=` (both units) + probe check. Probe now **20/20 PASS**; gateway healthy.
+- Lesson (allowlist drift): any new host mount or qnoe-ai-writable path is writable in the sandbox
+  by default. When adding a mount, update `50-b7-readonly.conf` + `qnoe-b7-test.service` + probe.

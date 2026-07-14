@@ -52,14 +52,14 @@ Red-team R4 proved read-only was SOUL-only (agent wrote a repo file 1/5 runs). N
 systemd mount namespace — drop-in `/etc/systemd/system/qnoe-hermes.service.d/50-b7-readonly.conf`
 (repo copy: `hermes/scripts/qnoe-hermes.service.d/`):
 
-- `ReadOnlyPaths=/opt/qnoe-agent /ICFO /home/yzamir` — binds `write_file`/`patch` and every `terminal` child.
+- `ReadOnlyPaths=/opt/qnoe-agent /ICFO /mnt/noe /home/yzamir` — binds `write_file`/`patch` and every `terminal` child.
 - `ReadWritePaths=/opt/qnoe-agent/memory /opt/qnoe-agent/logs /opt/qnoe-agent/hermes` (Mem0/SQLite, logs, session state). `/home/qnoe-ai` (`.mem0`, `.cache`) stays rw by default.
 - `InaccessiblePaths=/opt/qnoe-agent/secrets` + `LoadCredential=teams.env:...` — systemd (root, outside the namespace) delivers teams.env via `$CREDENTIALS_DIRECTORY`; `start_hermes.sh` sources it there, falling back to the direct path for bare/rollback runs.
 - `NoNewPrivileges` + `PrivateTmp` + `ProtectSystem=full`.
 
 **Verification:** standing unit `qnoe-b7-test.service` runs `scripts/b7_probe.sh` under the *same*
-directives (keep the two units in sync). `sudo systemctl start qnoe-b7-test` → 19 PASS lines in
-`logs/b7_probe.log`. 2026-07-14: 19/19.
+directives (keep the two units in sync). `sudo systemctl start qnoe-b7-test` → all-PASS lines in
+`logs/b7_probe.log`. 2026-07-14: 20/20.
 
 **Gotchas:** (1) red-team harness Channel A (`hermes -z`) runs OUTSIDE the unit → NOT sandboxed;
 enforcement checks go via Teams or the probe unit. (2) cron jobs (nightly re-index git-pulls
@@ -68,6 +68,11 @@ registry DBs are `journal_mode=delete`, so ro readers need no side files — do 
 without revisiting the ro mounts. (4) Rollback: `sudo cp /dev/null .../50-b7-readonly.conf && sudo
 systemctl daemon-reload && sudo systemctl restart qnoe-hermes` (no sudo rm in NOPASSWD set).
 Backup of the pre-B7 launcher: `scripts/start_hermes.sh.bak-pre-b7` on the DGX.
+(5) **Enforcement is an allowlist of paths — new mounts are writable by default.** Found + fixed
+2026-07-14: `/mnt/noe` (second CIFS mount of the SAME NOE share, `uid=1001` = qnoe-ai, used by the
+watcher) was rw inside the namespace — a full bypass of the `/ICFO` ro mount. Any NEW mount or
+qnoe-ai-writable path added to the host must be added to `ReadOnlyPaths=` in BOTH units, and a
+matching check added to `b7_probe.sh`.
 
 ## Key Paths on DGX
 

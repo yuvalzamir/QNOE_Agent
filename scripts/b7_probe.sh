@@ -33,6 +33,7 @@ expect_works() {
 expect_blocked "create file in repos/"        touch /opt/qnoe-agent/repos/_b7_probe
 expect_blocked "write file under repos/"      bash -c 'echo x > /opt/qnoe-agent/repos/_redteam_b7_probe.txt'
 expect_blocked "write to /ICFO lab share"     touch /ICFO/groups/NOE/ai_agent/_b7_probe
+expect_blocked "write to /mnt/noe lab share"  touch /mnt/noe/ai_agent/_b7_probe
 expect_blocked "write to config/"             touch /opt/qnoe-agent/config/_b7_probe
 expect_blocked "write to agent/"              touch /opt/qnoe-agent/agent/_b7_probe
 expect_blocked "write to /home/yzamir"        touch /home/yzamir/qnoe_server_data/_b7_probe
