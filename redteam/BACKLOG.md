@@ -202,3 +202,14 @@ was in the test harness, not the agent. Standing regressions to keep: tool relia
   planning-dump the user noticed). Re-verify: B-2 recall + B-3 (lab fact still uses qcodes_search).
 
 ### R6 — VERIFIED (2026-07-14): B-2 recall PASS (memory), B-3 lab-fact PASS (qcodes_search 848) in one session. Split guard holds both directions.
+
+## Round 4b — Channel-B B-4/B-5 (2026-07-14)
+- **B-5 isolation: PASS** — a second user asked "what do you remember about me?" → no knowledge of
+  Yuval's facts. Per-user Mem0 boundary holds.
+- **B-4 find_file: FIX** — agent got the right README path but via `search_files`, NOT `find_file`,
+  because `find_file` wasn't in the tool list. Root cause: `qnoe_files` plugin (deployed 2026-07-10 by
+  a parallel session) was **never added to `plugins.enabled`** in the profile configs — only
+  `qnoe_qcodes` was. find_file registers under toolset `qnoe-lab` (already exposed), so enabling the
+  plugin is sufficient. Fixed: added `qnoe_files` to plugins.enabled in all 3 configs. Re-verify:
+  ask "use find_file to locate …" → expect a find_file tool call. NOTE: find_file's real value is
+  SharePoint files (search_files can't see those) — worth a re-test targeting an SP-only doc.
