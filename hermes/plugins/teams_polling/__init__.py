@@ -255,8 +255,10 @@ class TeamsPollingAdapter(BasePlatformAdapter):
             message_id=msg_id,
         )
 
-        event = MessageEvent()
-        event.text = text
+        # MessageEvent is a dataclass whose first field `text` is required —
+        # MessageEvent() with no args raises TypeError and poisons the poll
+        # cycle (every poll retries the same message forever).
+        event = MessageEvent(text)
         event.message_type = MessageType.TEXT
         event.source = source
         event.message_id = msg_id
