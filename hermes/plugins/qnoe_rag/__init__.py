@@ -84,13 +84,20 @@ MEM0_COLLECTION = "episodic_memory"
 MEM0_LLM_MODEL = os.environ.get("MEM0_LLM_MODEL", "hermes-3-70b")
 VLLM_BASE_URL = os.environ.get("VLLM_BASE_URL", "http://localhost:8000/v1")
 
+# Derive Mem0's Qdrant target from QDRANT_URL instead of hardcoding localhost:
+# inside the OpenShell sandbox (B7-OS) Qdrant is only reachable via
+# host.openshell.internal through the L7 proxy — a hardcoded localhost bypasses
+# the proxy (NO_PROXY) and dies with ECONNREFUSED (Mem0 add/search failed).
+from urllib.parse import urlparse as _urlparse
+_QDRANT_PARSED = _urlparse(QDRANT_URL)
+
 MEM0_CONFIG = {
     "vector_store": {
         "provider": "qdrant",
         "config": {
             "collection_name": MEM0_COLLECTION,
-            "host": "localhost",
-            "port": 6333,
+            "host": _QDRANT_PARSED.hostname or "localhost",
+            "port": _QDRANT_PARSED.port or 6333,
             "embedding_model_dims": 768,
         },
     },
