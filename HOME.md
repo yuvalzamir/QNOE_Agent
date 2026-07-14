@@ -47,6 +47,7 @@
 | [[CONTEXT_EXECUTION_PLAN]] | Hand-off plan for roadmap steps 1-3 (vLLM 64K+fp8, toolset slimming, Provence) — executed 2026-07-09/10 |
 | [[GPT_OSS_CUTOVER_PLAN]] | Hand-off plan for the production cutover to gpt-oss-120b via llama.cpp — executed 2026-07-10 |
 | [[GPT_OSS_PILOT_PLAN]] | Pilot plan for gpt-oss-120b — vLLM path FAILED (M39/M41); llama.cpp path won → see [[GPT_OSS_CUTOVER_PLAN]] |
+| [[USER_GUIDE]] | Plain-language guide for lab members (find files, look up measurement runs) — WIP |
 | [[MVP_VERIFICATION_PLAN]] | The 4 remaining MVP-1 acceptance tests (routing, RAG-paper, /switch recast, /help recast) — pre-declaration checklist |
 | `redteam/BACKLOG.md` | Red-team harness findings log (R1-R4, M47) — the adversarial test loop's memory |
 | [[MEM0_INTEGRATION]] | Program to add per-user Mem0 memory inside `qnoe_rag` (see [[memory/decisions#D13]]) |

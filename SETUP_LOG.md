@@ -1568,3 +1568,30 @@ reuses the `qnoe_qcodes` registry helpers. Full detail + findings log:
 off`, `agent.tool_use_enforcement: true`, toolsets `[file, terminal, clarify,
 qnoe-lab]`. Confirmed solid: injection defense, secret refusal, run-existence
 honesty, cross-team attribution.
+
+## 2026-07-14 (later) — SharePoint file search + B7-RAG regression fix
+
+**SP file search now works** via a deterministic `find_file` hook in `qnoe_rag`
+(mirrors the run-id registry hook): file-location intent ("find/where is/give me
+the document/manual/… X") is detected in prefetch, the keyword extracted (handles
+lowercase + distinctive codes), and our `qnoe_files` search (CIFS + SharePoint
+manifests) is run in code and injected — so SharePoint web links reach the answer
+regardless of which tool the model picks. This was chosen after prompt-steering
+the model to prefer our `find_file` over Hermes's core `search_files` proved
+unreliable (~80%). Hermes has no per-tool disable (toolset-level only), so the
+hook (bypass the choice) is the robust pattern. `qnoe_files` plugin was also
+missing from `plugins.enabled` — added (B-4).
+
+**B7-RAG regression (R9):** the parallel B7 read-only work set `PrivateTmp=yes`,
+which hid the fastembed BM25 model cache (was in `/tmp/fastembed_cache`) → RAG
+threw "Could not load model Qdrant/bm25" → the UNGUARDED sync retrieve in
+`prefetch()` crashed the whole prefetch → Mem0 + qcodes + find_file hooks all went
+down; RAG was out for ~1h. Fixed: BM25 cache copied to
+`/opt/qnoe-agent/memory/fastembed_cache` (in-namespace, read-write) +
+`FASTEMBED_CACHE_PATH` in `start_hermes.sh`; and `_run_retrieve` in prefetch is
+now guarded so a RAG failure degrades to empty RAG instead of killing the hooks.
+
+**Also this session:** llama-server `--temp 0.2 --top-p 0.9` (cut tool-selection
+non-determinism 3/5→4/5); memory guard split (R6: user-context→memory,
+lab-records→tools); registry-hook run-id regex broadened (R5: "run with ID N").
+Full findings: `redteam/BACKLOG.md` R1-R9.
