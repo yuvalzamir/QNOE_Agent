@@ -19,5 +19,6 @@ exec /opt/qnoe-agent/llamacpp/bin/llama-server \
   --host 0.0.0.0 --port 8000 \
   --jinja --chat-template-kwargs '{"reasoning_effort":"low"}' \
   -ngl 999 --flash-attn on -ub 2048 \
+  --temp 0.2 --top-p 0.9 \
   -c 262144 --parallel 4 \
   > /opt/qnoe-agent/logs/llamacpp.log 2>&1
