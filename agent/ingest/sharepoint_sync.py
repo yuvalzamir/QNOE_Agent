@@ -13,6 +13,7 @@ Usage:
 import argparse
 import json
 import logging
+import multiprocessing
 import os
 import sqlite3
 import threading
@@ -65,6 +66,47 @@ def _memory_ok() -> bool:
     """Return True if available system RAM is above the safety floor."""
     return psutil.virtual_memory().available / (1024 ** 3) >= MIN_FREE_GB
 
+
+# Chunking runs in a forkserver-based subprocess, never a plain fork of the main
+# process. By mid-batch the main process has loaded torch/onnxruntime (threads +
+# CUDA) via embed_documents; forking THAT state segfaults the worker mid-parse
+# (_BrokenExecutor), silently dropping the file (M47). forkserver forks each
+# worker from a clean, single-threaded server process instead — fork-speed
+# (unlike spawn, which re-imports the whole module tree per file and would
+# cripple full_sync's 76K files) but without inheriting the unsafe torch state.
+# The server is pre-started from a clean pre-torch state via _ensure_chunk_server.
+_CHUNK_CTX = multiprocessing.get_context("forkserver")
+_CHUNK_CTX.set_forkserver_preload(["agent.ingest.splitter"])
+_chunk_server_started = False
+_chunk_server_lock = threading.Lock()
+
+
+def _noop_task() -> bool:
+    return True
+
+
+def _ensure_chunk_server() -> None:
+    """Start the forkserver server once, from a clean (pre-torch) state.
+
+    Called at the top of a sync run — before any embedding loads torch into the
+    main process — so the server (and every worker forked from it) never inherits
+    fork-unsafe torch/CUDA thread state. Idempotent and thread-safe.
+    """
+    global _chunk_server_started
+    if _chunk_server_started:
+        return
+    with _chunk_server_lock:
+        if _chunk_server_started:
+            return
+        try:
+            ex = _PPE(max_workers=1, mp_context=_CHUNK_CTX)
+            ex.submit(_noop_task).result(timeout=120)
+            ex.shutdown(wait=False)
+            _chunk_server_started = True
+            logger.info("SP chunk forkserver started (clean, pre-torch)")
+        except Exception as exc:
+            logger.warning("Could not pre-start chunk forkserver: %s", exc)
+
 # Listing cache: saves the full item list to disk so restarts skip the listing phase
 LISTING_CACHE_DIR = Path(os.environ.get("SP_LISTING_CACHE_DIR", "/tmp/qnoe-sp-listing-cache/"))
 LISTING_CACHE_MAX_AGE_H = int(os.environ.get("SP_LISTING_CACHE_MAX_AGE_H", "999999"))  # never expires by default
@@ -74,8 +116,10 @@ def _chunk_file_safe(dest: Path, site_name: str) -> list:
 
     One crash/timeout only affects this one file — no cascade to other threads.
     Explicitly kills the worker process on timeout so shutdown(wait=True) never hangs.
+    Uses a forkserver context so the worker never inherits the parent's
+    torch/onnxruntime state (which crashes forked workers on the 2nd+ file — M47).
     """
-    ex = _PPE(max_workers=1)
+    ex = _PPE(max_workers=1, mp_context=_CHUNK_CTX)
     try:
         fut = ex.submit(chunk_file, dest, site_name)
         try:
@@ -252,8 +296,106 @@ def _get_sp_manifest_conn() -> sqlite3.Connection:
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sp_activity_ts ON sp_activity(ts)")
+    # Retry queue: items whose processing failed during a delta pass. The delta
+    # token advances regardless (so we don't reprocess the whole change set every
+    # cycle), which means a one-time failure would otherwise be lost forever.
+    # Failed items are parked here and re-attempted on later syncs until they
+    # succeed or exhaust max attempts. See memory/mistakes.md M47.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sp_retry_queue (
+            item_id      TEXT PRIMARY KEY,
+            drive_id     TEXT NOT NULL,
+            site_name    TEXT NOT NULL,
+            name         TEXT,
+            attempts     INTEGER NOT NULL DEFAULT 0,
+            first_failed TEXT NOT NULL,
+            last_attempt TEXT NOT NULL,
+            last_error   TEXT
+        )
+    """)
     conn.commit()
     return conn
+
+
+# Max times a failed item is re-attempted before it is given up on (and left in
+# the queue flagged as exhausted, so the report can surface it).
+SP_RETRY_MAX_ATTEMPTS = int(os.environ.get("SP_RETRY_MAX_ATTEMPTS", "5"))
+
+
+def _enqueue_retry(sp_conn: sqlite3.Connection, item: dict, drive_id: str,
+                   site_name: str, error: str) -> None:
+    """Record (or bump the attempt count of) a failed item in the retry queue."""
+    now = datetime.now(timezone.utc).isoformat()
+    item_id = item.get("id")
+    if not item_id:
+        return
+    sp_conn.execute(
+        """INSERT INTO sp_retry_queue
+               (item_id, drive_id, site_name, name, attempts, first_failed, last_attempt, last_error)
+           VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+           ON CONFLICT(item_id) DO UPDATE SET
+               attempts     = attempts + 1,
+               last_attempt = excluded.last_attempt,
+               last_error   = excluded.last_error,
+               name         = excluded.name""",
+        (item_id, drive_id, site_name, item.get("name", ""), now, now, (error or "")[:500]),
+    )
+    sp_conn.commit()
+
+
+def _dequeue_retry(sp_conn: sqlite3.Connection, item_id: str) -> None:
+    """Remove an item from the retry queue (called after it finally succeeds)."""
+    sp_conn.execute("DELETE FROM sp_retry_queue WHERE item_id = ?", (item_id,))
+    sp_conn.commit()
+
+
+def _process_retry_queue(
+    site_cfg: dict, cfg: dict, drive_id: str, temp_dir: Path,
+    token, client: QdrantClient, sp_conn: sqlite3.Connection, stats: dict,
+) -> None:
+    """Re-attempt items parked in the retry queue for this drive.
+
+    Re-fetches each item's current metadata from Graph (the parked row only
+    stores ids) and runs it back through _process_item. Successes are dequeued;
+    still-failing items keep their bumped attempt count. Items past
+    SP_RETRY_MAX_ATTEMPTS are skipped (left in the queue, flagged exhausted).
+    """
+    from .sharepoint_client import GRAPH_BASE, _get as _graph_get
+    rows = sp_conn.execute(
+        """SELECT item_id, name, attempts FROM sp_retry_queue
+           WHERE drive_id = ? AND attempts < ?""",
+        (drive_id, SP_RETRY_MAX_ATTEMPTS),
+    ).fetchall()
+    if not rows:
+        return
+    logger.info("SP retry: %d parked item(s) for %s/%s",
+                len(rows), site_cfg["name"], drive_id)
+    for item_id, name, attempts in rows:
+        tok = token.get() if isinstance(token, _SharedToken) else token
+        try:
+            item = _graph_get(f"{GRAPH_BASE}/drives/{drive_id}/items/{item_id}", tok)
+        except Exception as exc:
+            # 404 → the item was deleted upstream; stop retrying it.
+            if "404" in str(exc):
+                _dequeue_retry(sp_conn, item_id)
+                logger.info("SP retry: %s gone upstream (404) — dropped from queue", name)
+            else:
+                _enqueue_retry(sp_conn, {"id": item_id, "name": name}, drive_id,
+                               site_cfg["name"], f"refetch failed: {exc}")
+            continue
+        try:
+            ok = _process_item(item, site_cfg, drive_id, temp_dir, token, client, sp_conn)
+        except Exception as exc:
+            _enqueue_retry(sp_conn, item, drive_id, site_cfg["name"], str(exc))
+            continue
+        if ok:
+            _dequeue_retry(sp_conn, item_id)
+            stats["processed"] += 1
+            stats.setdefault("retried_ok", 0)
+            stats["retried_ok"] += 1
+            logger.info("SP retry: recovered %s (was attempt %d)", name, attempts)
+        else:
+            _enqueue_retry(sp_conn, item, drive_id, site_cfg["name"], "still failing")
 
 
 def record_sp_activity(source: str, site: str, stats: dict) -> None:
@@ -518,12 +660,12 @@ def _process_item(
         try:
             chunks = _chunk_file_safe(dest, site_cfg["name"])
         except (_ChunkTimeout, _BrokenExecutor):
-            logger.error(
-                "SP chunk_file timed out or worker crashed, skipping: %s", name
-            )
-            return False
+            # Retryable failure (transient crash/timeout), NOT a permanent skip
+            # — propagate so the caller parks it in the retry queue. See M47.
+            logger.error("SP chunk_file timed out or worker crashed: %s", name)
+            raise
         if not chunks:
-            return False
+            return False  # parsed but produced no text — permanent skip, no retry
 
         # Override source to SharePoint web URL (temp path is meaningless)
         web_url = item.get("webUrl", rel_path)
@@ -547,8 +689,10 @@ def _process_item(
         return True
 
     except Exception as exc:
+        # Download/embed/upsert failure — retryable; propagate so the caller
+        # parks it in the retry queue (previously swallowed as a silent skip).
         logger.error("SP processing failed for %s: %s", name, exc)
-        return False
+        raise
     finally:
         if own_conn:
             sp_conn.close()
@@ -604,6 +748,7 @@ def full_sync(site_cfg: dict, cfg: dict, token: str, skip_files: int = 0, keep_c
     sp_conn = _get_sp_manifest_conn()
     temp_dir = Path(cfg.get("temp_dir", "/tmp/qnoe-sharepoint/"))
     stats: dict = {"processed": 0, "skipped": 0, "errors": 0, "failed_files": []}
+    _ensure_chunk_server()  # start the clean chunk forkserver before any embedding
     token_ts = time.monotonic()
 
     drive_map = _resolve_drive_ids(site_cfg, token)
@@ -706,6 +851,7 @@ def delta_sync(site_cfg: dict, cfg: dict, token: str) -> dict:
     temp_dir = Path(cfg.get("temp_dir", "/tmp/qnoe-sharepoint/"))
     stats: dict = {"processed": 0, "new": 0, "updated": 0, "skipped": 0, "deleted": 0, "errors": 0, "failed_files": [], "skipped_files": []}
 
+    _ensure_chunk_server()  # start the clean chunk forkserver before any embedding
     token_ts = time.monotonic()
     drive_map = _resolve_drive_ids(site_cfg, token)
     for drive_name, drive_id in drive_map.items():
@@ -733,10 +879,19 @@ def delta_sync(site_cfg: dict, cfg: dict, token: str) -> dict:
             len(items), site_cfg["name"], drive_name,
         )
 
+        # Re-attempt items parked from earlier cycles first (bounded: one attempt
+        # per cycle). Items that fail below wait for the next cycle's retry pass.
+        token, token_ts = _fresh_token(cfg, token, token_ts)
+        try:
+            _process_retry_queue(site_cfg, cfg, drive_id, temp_dir, token, client, sp_conn, stats)
+        except Exception as exc:
+            logger.error("SP retry queue failed for %s/%s: %s", site_cfg["name"], drive_name, exc)
+
         for item in items:
             item_id = item["id"]
             if "deleted" in item:
                 _delete_item(sp_conn, client, item_id)
+                _dequeue_retry(sp_conn, item_id)  # nothing left to retry
                 stats["deleted"] += 1
                 continue
             if "file" not in item:
@@ -753,18 +908,38 @@ def delta_sync(site_cfg: dict, cfg: dict, token: str) -> dict:
                         stats["new"] += 1
                     else:
                         stats["updated"] += 1
+                    _dequeue_retry(sp_conn, item_id)  # clear any prior failure
                 else:
-                    # A changed item that produced nothing — chunk timeout,
-                    # worker crash, empty parse, oversized, etc. Record the
-                    # name so the report can surface silently-dropped files.
+                    # Permanent skip (unsupported ext / oversized / excluded /
+                    # unchanged / empty parse) — not a failure, do not retry.
                     stats["skipped"] += 1
                     stats["skipped_files"].append(item.get("name", "unknown"))
             except Exception as exc:
+                # Retryable failure (chunk crash, download/embed error). Park it
+                # so it is NOT lost when the delta token advances below. See M47.
                 logger.error("SP delta item error: %s", exc)
                 stats["errors"] += 1
                 stats["failed_files"].append(item.get("name", "unknown"))
+                _enqueue_retry(sp_conn, item, drive_id, site_cfg["name"], str(exc))
 
         _save_delta_link(drive_id, new_delta_link)
+
+    # Surface the retry queue so parked/stuck items aren't silently lost.
+    try:
+        depth = sp_conn.execute("SELECT COUNT(*) FROM sp_retry_queue").fetchone()[0]
+        if depth:
+            stats["retry_queued"] = depth
+            exhausted = [r[0] for r in sp_conn.execute(
+                "SELECT name FROM sp_retry_queue WHERE attempts >= ?",
+                (SP_RETRY_MAX_ATTEMPTS,)).fetchall()]
+            if exhausted:
+                stats["retry_exhausted"] = exhausted
+                logger.warning(
+                    "SP retry: %d item(s) exhausted %d attempts, giving up: %s",
+                    len(exhausted), SP_RETRY_MAX_ATTEMPTS, ", ".join(exhausted[:10]),
+                )
+    except Exception:
+        pass
 
     sp_conn.close()
     return stats

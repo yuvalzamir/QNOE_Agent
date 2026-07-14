@@ -1,5 +1,5 @@
 # Mistakes & Pitfalls
-*Last updated: 2026-07-13 (M47 — SharePoint poller reporting blind spot + silent-skip drops)*
+*Last updated: 2026-07-13 (M47 root-cause fixes: forkserver chunking + retry queue)*
 
 > Bugs fixed and hard-won technical lessons. Check here before debugging similar issues.
 > Related: [[memory/deploy-patterns]] · [[memory/infrastructure]] · [[SETUP_LOG]]
@@ -350,7 +350,11 @@ Closes roadmap step 5 of [[CONTEXT_PRESSURE_REPORT]]. Numbering note: M39 (unifi
 - **Backfilled both files** (19 + 27 chunks) by running `_process_item` one-file-per-fresh-process (avoids bug #1).
 - **Reporting (the user's ask):** new `sp_activity` table in `sharepoint.db`; `record_sp_activity(source, site, stats)` called by the poller (`source="poller"`) and nightly (`"nightly"`); `summarize_sp_activity(24)` aggregated into `task_sync_sharepoint` stats as `poller_activity_24h`; both txt (`_summarise_stats`) and Teams (`_task_detail`) renderers now show a `poller (24h): …` line **with a `dropped:` list** of skipped/failed filenames. `delta_sync` now records skipped **names**, not just a count. Files touched: `sharepoint_sync.py`, `smb_watcher.py`, `nightly_run.py`, `post_report.py`.
 
-**Still open (design fixes, not yet done):** bug #1 (recreate pool/subprocess per file, or serialize Docling) and bug #2 (don't advance the delta token past failed items — retry queue) remain. See [[TODO]].
+**Root-cause fixes (2026-07-13, branch `feature/sp-ingest-hardening`, deployed + validated):**
+- **Bug #1 (chunk crash) → forkserver.** `_chunk_file_safe` now runs Docling in a `multiprocessing.get_context("forkserver")` pool, not a plain fork. The fork crashed because by mid-batch the main process had loaded torch/onnxruntime (threads + CUDA) via `embed_documents`, and forking that state segfaults the worker. forkserver forks each worker from a clean single-threaded server started once (via `_ensure_chunk_server()`, called at the top of delta_sync/full_sync **before** any embedding) — fork-speed, no torch inheritance. **NOT spawn**: spawn re-imports the whole module tree per file (torch/docling), which would cripple full_sync's 76K files. Validated: two PDFs chunk in one process (19 + 27 chunks) *with torch loaded in the main process* — the exact case that deterministically crashed. Requires the entry modules to guard `if __name__ == "__main__"` (all three do).
+- **Bug #2 (lost failures) → retry queue.** New `sp_retry_queue` table. `_process_item` now **raises** on retryable failures (chunk crash, download/embed error) instead of returning `False` (permanent skips — unsupported/oversized/excluded/unchanged/empty — still return `False`). `delta_sync` parks raised failures via `_enqueue_retry`, and re-attempts parked items at the top of each cycle via `_process_retry_queue` (re-fetches item metadata from Graph by id; dequeues on success; bounded by `SP_RETRY_MAX_ATTEMPTS=5`, after which items are flagged exhausted and logged). The delta token still advances (no reprocessing the whole change set), but failures are no longer lost.
+
+**Lesson added:** `ProcessPoolExecutor` default fork is unsafe once the parent loads a threaded/CUDA lib (torch). Use **forkserver** (clean server, fork-speed) — not spawn (per-task re-import) — and start the server from a pre-torch state.
 
 **Why it's unique to SharePoint:** SMB changes are *detect-only* → queued to `change_queue` → ingested+reported by the nightly `task_process_change_queue`. The SP poller is the **only** daemon path that performs terminal ingestion itself (the Graph delta token is consumed on read, so it can't defer to a batch) — which is exactly why its work was invisible.
 
