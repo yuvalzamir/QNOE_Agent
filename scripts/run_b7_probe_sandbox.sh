@@ -13,7 +13,9 @@ openshell sandbox delete qnoe-b7-probe 2>/dev/null || true
 
 HOST_ALIAS="${HOST_ALIAS:-host.openshell.internal}"
 
-exec openshell sandbox create \
+# No exec: the sandbox container lingers after the command exits until it is
+# deleted, so always clean up and propagate the probe's exit code.
+openshell sandbox create \
     --name qnoe-b7-probe \
     --from qnoe-hermes:0.1 \
     --policy /opt/qnoe-agent/config/sandbox-policy.yaml \
@@ -23,3 +25,6 @@ exec openshell sandbox create \
     --env TEAMS_ENV_FILE=/run/teams.env \
     --driver-config-json "$(cat /opt/qnoe-agent/config/hermes-sandbox-mounts.json)" \
     -- bash /opt/qnoe-agent/scripts/b7_probe.sh
+RC=$?
+openshell sandbox delete qnoe-b7-probe 2>/dev/null || true
+exit $RC
