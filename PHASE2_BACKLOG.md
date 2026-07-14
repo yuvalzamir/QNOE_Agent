@@ -399,7 +399,12 @@ get_run_metadata(
 
 **Why:** OpenShell provides policy enforcement layers (network filtering, credential isolation) that plain Docker doesn't. These matter for Phase 2 (T2–T4 write access) where the agent can modify shared resources.
 
-**Trigger:** Monitor OpenShell releases for Docker driver mount support. Check release notes at each NVIDIA DGX software update.
+**Trigger:** Monitor OpenShell releases for Docker driver mount support. Check release notes at each NVIDIA DGX software update. *(Re-checked 2026-07-14: still 0.0.59, mounts still experimental/K8s-only — blocked.)*
+
+**Migration plan + estimates (2026-07-14, user wants off systemd):**
+1. **De-lock-in (DONE 2026-07-14):** `config/sandbox-policy.yaml` is the single source of truth for the confinement contract; `scripts/b7_probe.sh` is the mechanism-agnostic acceptance test (runs inside any confinement). The only systemd-specific artifacts are the drop-in + probe launcher unit — both disposable. Gateway code has zero systemd references; `start_hermes.sh` credential chain already works under systemd/docker/bare.
+2. **Interim, available now — plain Docker (~1–2 days + verification day):** rebuild image for the Hermes runtime (arm64, match hermes-venv python), `docker run` with ro binds per the policy, rw volumes memory/logs/hermes, `--env-file` for teams.env, tmpfs /tmp, run as 1001. Buys immutable code view + identity isolation + an egress hook. Domain-level egress (graph.microsoft.com) needs an L7 proxy: **+1 day**, else coarse L3/L4 only.
+3. **Target — OpenShell (~2–3 days once NVIDIA ships Docker-driver mounts):** step 2's image + mount map carry over; add landlock policy wiring, OpenShell network policies (the L7 part replaces the proxy), JWT/gateway auth, full re-verification.
 
 **Tasks:**
 - [ ] Monitor OpenShell releases for volume mount support in the Docker driver

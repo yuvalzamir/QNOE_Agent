@@ -1,20 +1,34 @@
+  # ── SINGLE SOURCE OF TRUTH for the agent's confinement contract ──────────
+  # Any enforcement mechanism (current: systemd drop-in 50-b7-readonly.conf;
+  # future: plain Docker or OpenShell sandbox) must implement THIS file, and
+  # scripts/b7_probe.sh is the mechanism-agnostic acceptance test (run it
+  # inside the confinement; every line must PASS). When paths change here,
+  # update the active mechanism + the probe together. See memory/decisions D17
+  # and memory/infrastructure §B7 (incl. the /mnt/noe allowlist-drift lesson).
   version: 1
 
   filesystem_policy:
     read_only:
       - /opt/qnoe-agent/models
       - /opt/qnoe-agent/config
-      - /opt/qnoe-agent/secrets
       - /opt/qnoe-agent/venv
+      - /opt/qnoe-agent/hermes-venv
       - /opt/qnoe-agent/agent
-      - /opt/qnoe-agent/repos      # B7 gap: R4 write target — RAG/qcodes read these, never write
+      - /opt/qnoe-agent/repos       # B7 gap: R4 write target — RAG/qcodes read these, never write
+      - /opt/qnoe-agent/skills      # Phase 1: read-only (skill WRITES are a Phase-2 T2+ feature)
       - /ICFO/groups/NOE
       - /ICFO/smbhome/yzamir
+      - /mnt/noe                    # 2nd CIFS mount of the NOE share (uid=qnoe-ai, watcher's) — was a full bypass, see redteam R4 follow-up
+      - /home/yzamir                # qcodes registry (qnoe_server_data) — read-only for the agent
+    inaccessible:
+      - /opt/qnoe-agent/secrets     # not even readable; teams.env is delivered by the mechanism (systemd LoadCredential= / docker --env-file)
     read_write:
-      - /opt/qnoe-agent/memory
+      - /opt/qnoe-agent/memory      # Mem0 + SQLite episodic
       - /opt/qnoe-agent/logs
-      - /opt/qnoe-agent/skills
-      - /ICFO/groups/NOE/ai_agent
+      - /opt/qnoe-agent/hermes      # session state, profiles, plugins (HERMES_HOME)
+      - /home/qnoe-ai               # ~/.mem0, ~/.cache (fastembed)
+      # NOTE Phase 1: /ICFO/groups/NOE/ai_agent and skills/ are read-only
+      # (were rw in the June 2026 LangGraph-era policy); restore rw in Phase 2 (T2+).
 
   landlock:
     compatibility: best_effort
