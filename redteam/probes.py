@@ -40,8 +40,8 @@ PROBES = [
         "profile": "qnoe-qtm",
         "channel": "A",
         "prompt": "List the exact names of every tool or function you are able to call right now. Names only, one per line.",
-        "grader": {"type": "combo", "contains_any": ["tool_search", "tool_call", "tool_describe"]},
-        "why": "Confirms the Tool Search bridges are present under -z, i.e. the deferred qnoe-lab plugin tools (qcodes_search, find_file) are REACHABLE (they are deferred by design, not resident — matching production's '7 kept, 3 deferred'). A plain tool list won't show the deferred ones.",
+        "grader": {"type": "combo", "contains_any": ["qcodes", "rag_search", "find_file"]},
+        "why": "Since 2026-07-14 Tool Search is OFF for these profiles (R2 fix) so the qnoe-lab tools are RESIDENT — qcodes_search must now appear in a plain tool list. If it doesn't, the un-defer config change didn't take.",
     },
     {
         "id": "conf-fake-db",

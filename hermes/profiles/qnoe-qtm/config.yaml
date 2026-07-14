@@ -75,7 +75,7 @@ compression:
   threshold: 0.75
 tools:
   tool_search:
-    enabled: 'on'
+    enabled: 'off'
 platform_toolsets:
   teams_polling:
   - file
