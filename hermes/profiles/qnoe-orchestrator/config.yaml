@@ -20,7 +20,7 @@ plugins:
 agent:
   max_turns: 90
   gateway_timeout: 1800
-  tool_use_enforcement: false
+  tool_use_enforcement: true
   task_completion_guidance: true
   parallel_tool_call_guidance: true
   environment_probe: false

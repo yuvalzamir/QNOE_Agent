@@ -91,3 +91,13 @@ battery is MEM0-off and wrote nothing).
   bug). Same probe: empty (harness) vs 848 (Teams) = tool-arg non-determinism.
 - Follow-up fix: SOUL hint — use a SHORT distinctive path substring (setup code),
   not descriptive words; retry looser before concluding not-found. Re-verify next run.
+
+### R2 residual #2 — prose-fallback on the tool call (2026-07-14)
+- Harness re-run: model produced the CORRECT qcodes_search args
+  {path:"L110 QTM", swept_parameter:"gate"} but emitted them as TEXT instead of
+  executing (M40 prose-fallback) → tool didn't run → FAIL. Path-hint worked (args
+  right); execution intermittent. Teams executes correctly (848).
+- Assessment: gpt-oss intermittency, not a config bug. Root cause (wrong source)
+  is fixed; remaining flakiness is reduce-not-eliminate.
+- Lever tried: re-enabled `tool_use_enforcement: true` (was false since cutover /
+  D15) to push structured tool calls. Measure pass-rate via repeated `--class tool`.
