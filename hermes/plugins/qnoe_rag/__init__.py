@@ -428,21 +428,28 @@ def _qcodes_registry_block(message: str) -> str:
 
 _FIND_INTENT_RE = re.compile(
     r"\b(find|locate|where\s+(?:is|are|can|to)|search\s+for|look\s+for|"
-    r"path\s+to|which\s+(?:file|doc|document|notebook))\b",
+    r"path\s+to|which\s+(?:file|doc|document|notebook)|give\s+me|show\s+me|"
+    r"get\s+me|do\s+(?:we|you)\s+have|is\s+there|pull\s+up|provide)\b",
     re.IGNORECASE,
 )
 _FILE_NOUN_RE = re.compile(
-    r"\b(files?|documents?|docs?|notebooks?|scripts?|papers?|manuals?|reports?|"
-    r"presentations?|slides?|readme|spreadsheets?|"
+    r"\b(files?|documents?|documentation|docs?|notebooks?|scripts?|papers?|"
+    r"manuals?|reports?|presentations?|slides?|readmes?|spreadsheets?|"
+    r"datasheets?|specs?|guides?|"
     r"\.(?:py|ipynb|docx?|pdf|pptx?|xlsx?|md|db|ya?ml|txt|csv|json|h5))\b",
     re.IGNORECASE,
 )
 _FIND_STOP = {
     "the", "a", "an", "of", "about", "for", "on", "in", "to", "setup", "document",
-    "file", "find", "locate", "where", "is", "are", "can", "which", "notebook",
-    "script", "paper", "please", "me", "give", "and", "that", "contains",
-    "containing", "named", "called", "any", "our", "group", "lab", "with",
-    "sharepoint", "cifs", "server", "use", "find_file", "locate", "search",
+    "documentation", "file", "files", "find", "locate", "where", "is", "are",
+    "can", "which", "notebook", "notebooks", "script", "scripts", "paper",
+    "papers", "manual", "manuals", "doc", "docs", "report", "reports",
+    "presentation", "presentations", "slide", "slides", "spec", "specs", "guide",
+    "guides", "datasheet", "please", "me", "give", "show", "get", "do", "we",
+    "you", "have", "there", "pull", "up", "provide", "and", "or", "that",
+    "contains", "containing", "named", "called", "any", "our", "group", "lab",
+    "with", "sharepoint", "cifs", "server", "use", "find_file", "search", "need",
+    "want", "related",
 }
 
 
@@ -476,7 +483,14 @@ def _extract_terms(message: str) -> list:
             continue
         if t not in out:
             out.append(t)
-    return out[:2]
+    if out:
+        return out[:2]
+    # Fallback: the distinctive lowercase subject word(s) — e.g. "give me the
+    # documentation of spectromag" -> "spectromag" (users type lowercase).
+    words = [w for w in re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,}", message)
+             if w.lower() not in _FIND_STOP]
+    words.sort(key=len, reverse=True)
+    return words[:2]
 
 
 def _find_file_block(message: str) -> str:
