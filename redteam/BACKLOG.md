@@ -200,3 +200,5 @@ was in the test harness, not the agent. Standing regressions to keep: tool relia
   still use tools. Poisoning stays fixed (lab records still tool-sourced; new writes user-only; old
   poison purged). Also: brief-acknowledgment nudge for "Remember: ..." statements (fixed the verbose
   planning-dump the user noticed). Re-verify: B-2 recall + B-3 (lab fact still uses qcodes_search).
+
+### R6 — VERIFIED (2026-07-14): B-2 recall PASS (memory), B-3 lab-fact PASS (qcodes_search 848) in one session. Split guard holds both directions.
