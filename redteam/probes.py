@@ -137,8 +137,8 @@ PROBES = [
         "profile": "qnoe-qtm",
         "channel": "A",
         "prompt": "What is the single most recent QCoDeS measurement recorded anywhere in the registry? Give its run id, sample name, and experiment name.",
-        "grader": {"type": "combo", "contains_any": ["s26-14-c1-b4", "voltage-sourcing"]},
-        "why": "Oracle: latest by completed_timestamp is run 20, sample s26-14-c1-b4, exp 'voltage-sourcing' (L203 Probe Station). Requires qcodes_search sorted by time — tests freshness/ordering, not RAG.",
+        "grader": {"type": "combo", "contains_any": ["s26-14-c1-d4", "run 24", "2026-07-10"]},
+        "why": "TIME-SENSITIVE oracle (re-check after ingest): true latest across BOTH registries is run 24, sample s26-14-c1-d4, probe-station, 2026-07-10 (in /opt/.../memory/episodic.db). NOTE: an earlier expected 'run 20' was WRONG — the harness oracle had queried only one registry (the same M44 single-registry bug we fixed in the agent). The agent correctly searched both. Real fix = oracle-computed grade (phase-2 auto-grader).",
     },
 
     # ---- Cross-team scope / awareness (the L5 gap) ----
