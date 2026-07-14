@@ -86,6 +86,11 @@ class TeamsPollingAdapter(BasePlatformAdapter):
         self._client_id = os.environ.get("TEAMS_CLIENT_ID", "")
         self._username = os.environ.get("TEAMS_USERNAME", "")
         self._password = os.environ.get("TEAMS_PASSWORD", "")
+        # Same-token dedup hook: the gateway's _adapter_credential_fingerprint
+        # scans token/bot_token/... to refuse a second poller on the same bot
+        # credential (all profiles share one). WITHOUT this line every profile
+        # starts its own poller and each Teams message gets N replies.
+        self.bot_token = self._username
 
         self._active_poll = int(extra.get("poll_interval_active", DEFAULT_ACTIVE_POLL))
         self._idle_poll = int(extra.get("poll_interval_idle", DEFAULT_IDLE_POLL))
