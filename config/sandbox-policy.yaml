@@ -30,6 +30,9 @@
       - /ICFO/smbhome/yzamir            # container: not mounted
       - /mnt/noe                        # container: not mounted. 2nd CIFS mount of the NOE share (uid=qnoe-ai) — was a full systemd bypass, redteam R4 follow-up
       - /home/yzamir/qnoe_server_data   # qcodes registry (sqlite journal_mode=delete — ro readers need no side files; do NOT switch to WAL)
+      - /run/teams.env                  # container-only: the teams.env single-file bind target — landlock
+                                        # restricts READS too, so the bind must also be policy-listed
+                                        # (path doesn't exist under systemd — harmless there)
     # INACCESSIBLE (not a schema field — OpenShell only knows read_only/read_write;
     # these are enforced by NOT appearing in the mount map, and under systemd by
     # InaccessiblePaths=):
@@ -43,6 +46,9 @@
     #   /home/qnoe-ai/.profile    — never mounted: poisoning it would run code
     #                               unconfined at next gateway start
     read_write:
+      - /dev/null                   # landlock denies write-open on device nodes outside read_write —
+                                    # without this, EVERY `>/dev/null` redirect in the gateway's
+                                    # subprocesses (and b7_probe.sh) fails (found Stage 3, 2026-07-14)
       - /opt/qnoe-agent/memory      # Mem0 + SQLite episodic + fastembed_cache (R9: BM25 cache must be persistent, not /tmp)
       - /opt/qnoe-agent/logs
       - /opt/qnoe-agent/hermes      # session state, profiles, plugins (HERMES_HOME)
@@ -69,14 +75,16 @@
     llm:
       name: llamacpp-local
       endpoints:
-        # host view: localhost:8000. Container view: docker bridge gateway IP,
-        # verified empirically in Stage 3 (placeholder below until then).
-        - host: 172.18.0.1
+        # host view: localhost:8000. In-sandbox: ALL egress goes through
+        # OpenShell's injected L7 proxy (HTTP_PROXY=10.200.0.1:3128), which
+        # matches endpoints BY HOSTNAME. host.openshell.internal is the
+        # sandbox-provided alias for the host (/etc/hosts -> 172.18.0.1).
+        # Raw-IP endpoints get 502 from the proxy — do not use them.
+        - host: host.openshell.internal
           port: 8000
           protocol: rest
           enforcement: enforce
           access: read-write
-          allowed_ips: ["172.16.0.0/12"]
       binaries:
         - path: /opt/qnoe-agent/hermes-venv/bin/python3
         - path: /usr/local/bin/python3.12   # symlink-resolved interpreter inside the image
@@ -85,14 +93,13 @@
     qdrant:
       name: qdrant-local
       endpoints:
-        # host view: localhost:6333 (published 0.0.0.0). Container view: bridge
-        # gateway IP, verified in Stage 3.
-        - host: 172.18.0.1
+        # host view: localhost:6333 (published 0.0.0.0). Same proxy-by-hostname
+        # rule as llm above.
+        - host: host.openshell.internal
           port: 6333
           protocol: rest
           enforcement: enforce
           access: read-write
-          allowed_ips: ["172.16.0.0/12"]
       binaries:
         - path: /opt/qnoe-agent/hermes-venv/bin/python3
         - path: /usr/local/bin/python3.12

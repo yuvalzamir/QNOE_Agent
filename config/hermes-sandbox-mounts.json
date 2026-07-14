@@ -14,5 +14,5 @@
 {"source":"/opt/qnoe-agent/hermes","target":"/opt/qnoe-agent/hermes","type":"bind","read_only":false},
 {"source":"/home/qnoe-ai/.mem0","target":"/home/qnoe-ai/.mem0","type":"bind","read_only":false},
 {"source":"/home/qnoe-ai/.cache","target":"/home/qnoe-ai/.cache","type":"bind","read_only":false},
-{"source":"/opt/qnoe-agent/secrets/teams.env","target":"/run/qnoe/teams.env","type":"bind","read_only":true}
+{"source":"/opt/qnoe-agent/secrets/teams.env","target":"/run/teams.env","type":"bind","read_only":true}
 ]}}

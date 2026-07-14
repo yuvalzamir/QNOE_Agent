@@ -11,14 +11,15 @@ export OPENSHELL_LOCAL_TLS_DIR=/home/qnoe-ai/.local/state/openshell/tls
 
 openshell sandbox delete qnoe-b7-probe 2>/dev/null || true
 
-GW_IP="${GW_IP:-172.18.0.1}"
+HOST_ALIAS="${HOST_ALIAS:-host.openshell.internal}"
 
 exec openshell sandbox create \
     --name qnoe-b7-probe \
     --from qnoe-hermes:0.1 \
     --policy /opt/qnoe-agent/config/sandbox-policy.yaml \
-    --env B7_LLM_URL="http://${GW_IP}:8000" \
-    --env B7_QDRANT_URL="http://${GW_IP}:6333" \
-    --env TEAMS_ENV_FILE=/run/qnoe/teams.env \
+    --no-auto-providers \
+    --env B7_LLM_URL="http://${HOST_ALIAS}:8000" \
+    --env B7_QDRANT_URL="http://${HOST_ALIAS}:6333" \
+    --env TEAMS_ENV_FILE=/run/teams.env \
     --driver-config-json "$(cat /opt/qnoe-agent/config/hermes-sandbox-mounts.json)" \
     -- bash /opt/qnoe-agent/scripts/b7_probe.sh
