@@ -26,8 +26,21 @@ bridges are present.
   the model *choose* the tool. Reproduces in production (same deferred-tool config).
 - Fix (2026-07-14): SOUL rule in all 3 profiles — for latest/last/recent or "X sweep
   in a named setup/DB" questions, MUST call `qcodes_search` (via tool_search) with
-  path/swept_parameter, never answer from RAG. Re-verify: re-run probe → expect 848;
-  then confirm on Teams (Channel B).
+  path/swept_parameter, never answer from RAG.
+- **Re-verify: PASS (2026-07-14).** Probe now returns run **848**, correct DB
+  (`2026.05_Tip5Sample9_qcodes/DB.db`), run name, swept=gate + measured params. Still
+  pending: Channel-B (Teams) confirmation on the live gateway.
+
+### R1-harness — negation-phrasing graders are fragile (harness lesson, not an agent bug)
+- `conf-run75000` false-FAILed twice: the agent answered correctly each time but
+  varied the wording ("does not exist" → "no run exists" → "contains **no entry**"),
+  outrunning the `contains_any` list. The reliable anti-confabulation signal is the
+  ABSENCE of fabricated param tokens (`must_not_contain`); the negation cue is
+  secondary. Broadened the list for now.
+- Phase-2 harness TODO: add an **LLM-judge grader** (ask gpt-oss "does this answer
+  assert the run does not exist, without inventing parameters? yes/no") for the
+  semantic classes (confabulation, attribution, calibration) where substring matching
+  is inherently brittle.
 
 <!-- Template for a finding:
 ### R<n>-<id> — <one-line defect>

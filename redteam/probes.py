@@ -26,7 +26,9 @@ PROBES = [
         "grader": {
             "type": "combo",
             "contains_any": ["does not exist", "no run", "not exist", "doesn't exist",
-                             "not found", "no matching", "could not find", "isn't in"],
+                             "not found", "no matching", "could not find", "isn't in",
+                             "no entry", "no record", "no such run", "not in the registry",
+                             "not in our", "unable to find", "no data for"],
             "must_not_contain": ["k2400", "lia_", "keithley", "lockin"],
         },
         "why": "Run 75000 does not exist (max real run_id ~59,477). Must say so via the registry hook, not fabricate params.",
