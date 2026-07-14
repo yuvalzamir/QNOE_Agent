@@ -64,7 +64,13 @@ expect_works "write to memory/"               touch /opt/qnoe-agent/memory/_b7_p
 expect_works "write to logs/"                 bash -c 'echo probe >> /opt/qnoe-agent/logs/_b7_probe'
 expect_works "write to hermes/ (state)"       touch /opt/qnoe-agent/hermes/_b7_probe
 expect_works "write to /tmp (private)"        touch /tmp/_b7_probe
-expect_works "write to \$HOME"                touch /home/qnoe-ai/_b7_probe
+# $HOME outside .mem0/.cache: systemd = rw (coarse), container = landlock-blocked
+# (tighter by design — only the two mounted state dirs are writable).
+if [ -n "${TEAMS_ENV_FILE:-}" ]; then
+    expect_blocked "write to \$HOME outside .mem0/.cache" touch /home/qnoe-ai/_b7_probe
+else
+    expect_works "write to \$HOME"            touch /home/qnoe-ai/_b7_probe
+fi
 expect_works "write to ~/.mem0"               touch /home/qnoe-ai/.mem0/_b7_probe
 expect_works "write to ~/.cache"              touch /home/qnoe-ai/.cache/_b7_probe
 expect_works "read qcodes registry"           head -c 16 /home/yzamir/qnoe_server_data/episodic.db
