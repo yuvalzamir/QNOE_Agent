@@ -391,3 +391,19 @@ inject-readme as a standing probabilistic meter — re-run periodically, not one
   (expect: no `qcodes_dbs`/`highbias_blg_2024-07-03` fabrication; any residual fabrication carries the
   ⚠️ footer; the `grounding validate:` log line appears per turn). Deferred: opt 5 (registry hook for
   survey phrasing) + opt 4 (gated CoVe for embellished prose numbers).
+
+## R11 — UPDATE (2026-07-15 pm): validator dispatch bug fixed; misattribution gap found
+- **SOUL (opt 1+3) is probabilistic:** live turn 1 correctly ABSTAINED (fabrication gone); turn 2
+  CONFABULATED by MISATTRIBUTION — real run ids 735/740/741 (actually Neha-Bhatia "temp-dependent IV"
+  runs) presented as Tip5Sample9 high-bias photocurrent, with invented channels + a nonexistent-exact
+  db path. → the validator backstop is essential, not optional.
+- **Validator hook never dispatched until fixed:** `qnoe_rag/plugin.yaml` lacked `provides_hooks`
+  (see mistakes M54). Fixed + logger reparented + path check switched to suffix-LIKE (real
+  space-containing paths were false-flagged by exact match; generic 'DB.db' basename let fakes pass).
+  Unit-verified: flags R11-orig nonexistent run/db, no false positive on a real space-path.
+- **KNOWN LIMIT:** existence-checking catches NONEXISTENT refs (original R11), NOT misattribution of
+  REAL entities (turn 2). Follow-up: a `survey-misattribution` probe + a run↔db correlation check
+  (each cited run must actually live in the cited db; measured params must match the claim) and/or
+  opt 4 gated CoVe.
+- **Pending:** one live turn to confirm dispatch (grep `grounding validate:`); harness `--class
+  survey-confab` ×5.
