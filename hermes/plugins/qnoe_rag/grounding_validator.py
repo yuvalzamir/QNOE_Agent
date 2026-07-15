@@ -95,60 +95,55 @@ def _run_exists(run_id: int) -> bool:
     return False
 
 
-def _db_path_exists(dbpath: str) -> bool:
-    base = os.path.basename(dbpath)
-    for db in REGISTRY_DBS:
-        if not os.path.exists(db):
-            continue
+def _esc(s: str) -> str:
+    """Escape LIKE wildcards so a path's own '_' / '%' aren't treated as
+    wildcards (paths are full of underscores)."""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _suffix_exists(db: str, table: str, cols: tuple, ref: str,
+                   immutable: bool = False) -> bool:
+    """True if any row has a column ENDING with `ref` (suffix LIKE).
+
+    Suffix match is the right tool: the path regex truncates space-containing
+    paths (common — 'L110 QTM', 'IV - meas') to their space-free tail, so an
+    exact match false-flags real paths; a bare-basename match ('DB.db') is too
+    generic and lets fabricated full paths pass. The captured tail (parent
+    dir(s) + basename) is distinctive enough to catch fabrications while a real
+    (truncated) path still matches. Fail-open on error."""
+    ref = ref.strip()
+    if not ref:
+        return True
+    like = f"%{_esc(ref)}"
+    where = " OR ".join(f"{c} LIKE ? ESCAPE '\\'" for c in cols)
+    try:
+        con = _connect_ro(db, immutable=immutable)
         try:
-            con = _connect_ro(db)
-            try:
-                if con.execute(
-                    "SELECT 1 FROM qcodes_registry WHERE db_path=? OR db_path LIKE ? LIMIT 1",
-                    (dbpath, f"%{base}"),
-                ).fetchone():
-                    return True
-            finally:
-                con.close()
-        except sqlite3.Error:
-            return True
-    return False
+            return con.execute(
+                f"SELECT 1 FROM {table} WHERE {where} LIMIT 1",
+                tuple(like for _ in cols),
+            ).fetchone() is not None
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return True  # fail-open
+
+
+def _db_path_exists(dbpath: str) -> bool:
+    return any(
+        os.path.exists(db) and _suffix_exists(db, "qcodes_registry", ("db_path",), dbpath)
+        for db in REGISTRY_DBS
+    )
 
 
 def _file_path_exists(path: str) -> bool:
-    base = os.path.basename(path)
     for db in REGISTRY_DBS:
-        if not os.path.exists(db):
-            continue
-        try:
-            con = _connect_ro(db)
-            try:
-                if con.execute(
-                    "SELECT 1 FROM index_manifest WHERE file_path=? OR file_path LIKE ? LIMIT 1",
-                    (path, f"%{base}"),
-                ).fetchone():
-                    return True
-            except sqlite3.Error:
-                pass
-            finally:
-                con.close()
-        except sqlite3.Error:
+        if os.path.exists(db) and _suffix_exists(db, "index_manifest", ("file_path",), path):
             return True
-    if os.path.exists(SP_MANIFEST_DB):
-        try:
-            con = _connect_ro(SP_MANIFEST_DB, immutable=True)  # WAL — see M52
-            try:
-                if con.execute(
-                    "SELECT 1 FROM sp_manifest WHERE item_path=? OR item_path LIKE ? OR web_url=? LIMIT 1",
-                    (path, f"%{base}", path),
-                ).fetchone():
-                    return True
-            except sqlite3.Error:
-                pass
-            finally:
-                con.close()
-        except sqlite3.Error:
-            return True
+    if os.path.exists(SP_MANIFEST_DB) and _suffix_exists(
+        SP_MANIFEST_DB, "sp_manifest", ("item_path", "web_url"), path, immutable=True
+    ):
+        return True
     return False
 
 

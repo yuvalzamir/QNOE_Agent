@@ -2,6 +2,12 @@ name: qnoe_rag
 description: "QNOE lab RAG retrieval — Qdrant + nomic-embed + cross-encoder reranker"
 version: "0.1.0"
 author: "QNOE Lab"
+# Declare the grounding-validator hook so the plugin system wires it into the
+# dispatching manager. WITHOUT this the register_hook call silently no-ops for
+# the agent's invoke_hook (redteam R11 — the validator never fired). qnoe_authz
+# needs the same declaration for its pre_gateway_dispatch hook.
+provides_hooks:
+  - transform_llm_output
 pip_dependencies:
   - qdrant-client
   - sentence-transformers
