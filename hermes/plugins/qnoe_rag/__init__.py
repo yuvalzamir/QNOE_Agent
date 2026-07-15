@@ -824,6 +824,27 @@ class QnoeRagProvider(MemoryProvider):
             self._prefetch_thread.join(timeout=5.0)
 
 
+@lru_cache(maxsize=1)
+def _grounding_validator():
+    """Load the sibling grounding_validator module by path (this plugin is
+    loaded via importlib, so a normal relative import isn't reliable)."""
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "grounding_validator.py")
+    spec = importlib.util.spec_from_file_location("qnoe_grounding_validator", path)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
 def register(ctx) -> None:
-    """Register QNOE RAG as a memory provider plugin."""
+    """Register QNOE RAG as a memory provider plugin + the post-hoc grounding
+    validator (transform_llm_output hook, redteam R11)."""
     ctx.register_memory_provider(QnoeRagProvider())
+    try:
+        ctx.register_hook(
+            "transform_llm_output", _grounding_validator().validate_reply
+        )
+        logger.info("qnoe_rag: grounding validator registered (transform_llm_output)")
+    except Exception as exc:  # never let the validator break plugin load
+        logger.warning("qnoe_rag: grounding validator NOT registered: %s", exc)
