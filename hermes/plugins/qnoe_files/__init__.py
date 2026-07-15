@@ -123,7 +123,13 @@ def _search_sharepoint(query: str, limit: int) -> List[Dict[str, Any]]:
         return []
     like = f"%{query}%"
     try:
-        conn = sqlite3.connect(f"file:{SP_MANIFEST_DB}?mode=ro", uri=True)
+        # immutable=1: open the manifest WITHOUT touching WAL side-files.
+        # sharepoint.db is a WAL database written by yzamir (watcher + nightly
+        # cron); a plain mode=ro open from the qnoe-ai gateway CREATES a
+        # qnoe-ai-owned -shm that then blocks the yzamir writers ("attempt to
+        # write a readonly database" in the nightly SP sync). immutable reads
+        # the last-checkpointed main db directly — no -shm, no cross-UID lock.
+        conn = sqlite3.connect(f"file:{SP_MANIFEST_DB}?mode=ro&immutable=1", uri=True)
     except sqlite3.OperationalError:
         return []
     try:

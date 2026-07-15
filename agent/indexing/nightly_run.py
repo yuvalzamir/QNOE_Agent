@@ -331,7 +331,32 @@ def task_process_change_queue() -> None:
     # Process doc files
     processed_ids: list[int] = []
     if doc_entries:
-        doc_paths = [Path(e["file_path"]) for e in doc_entries if Path(e["file_path"]).exists()]
+        # Skip files that aren't readable (CIFS ACL — some lab files are
+        # restricted on the Windows share). One unreadable file must NOT abort
+        # the whole change-queue task; it stays pending and is re-checked next
+        # run. NB: on CIFS neither Path.exists() nor os.access() is reliable —
+        # Path.exists() RAISES PermissionError when the parent dir denies
+        # traversal (py3.12 propagates EACCES from stat), and os.access() reads
+        # mode bits the SMB server may not honour on open. The only reliable
+        # test is to actually open the file.
+        doc_paths = []
+        unreadable = []
+        for e in doc_entries:
+            fp = e["file_path"]
+            try:
+                with open(fp, "rb") as fh:
+                    fh.read(1)
+            except FileNotFoundError:
+                continue                 # missing/deleted — skip silently
+            except OSError:
+                unreadable.append(fp)    # permission denied, stale handle, etc.
+                continue
+            doc_paths.append(Path(fp))
+        if unreadable:
+            logger.warning(
+                "Change queue: skipping %d unreadable file(s) (permission denied): %s",
+                len(unreadable), unreadable[:3],
+            )
         if doc_paths:
             logger.info("Ingesting %d doc files from change queue", len(doc_paths))
             ingest_directory(
@@ -345,9 +370,26 @@ def task_process_change_queue() -> None:
             )
         processed_ids.extend(e["id"] for e in doc_entries)
 
-    # Process .db files
+    # Process .db files (same CIFS-safe readability test as docs above)
     if db_entries:
-        db_paths = [Path(e["file_path"]) for e in db_entries if Path(e["file_path"]).exists()]
+        db_paths = []
+        db_unreadable = []
+        for e in db_entries:
+            fp = e["file_path"]
+            try:
+                with open(fp, "rb") as fh:
+                    fh.read(1)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                db_unreadable.append(fp)
+                continue
+            db_paths.append(Path(fp))
+        if db_unreadable:
+            logger.warning(
+                "Change queue: skipping %d unreadable .db file(s) (permission denied): %s",
+                len(db_unreadable), db_unreadable[:3],
+            )
         if db_paths:
             logger.info("Scanning %d QCoDeS databases from change queue", len(db_paths))
             asyncio.run(scan_specific_dbs(db_paths))
