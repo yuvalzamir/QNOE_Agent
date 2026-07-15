@@ -80,5 +80,16 @@ elif [ -r /opt/qnoe-agent/secrets/teams.env ]; then
     set +a
 fi
 
+# ── SOUL / context-file health check (see memory/mistakes.md M53) ────────────
+# Hermes' prompt_builder silently DROPS any SOUL/MEMORY/USER file that matches an
+# injection/deception threat pattern — a whole persona/grounding ruleset can
+# vanish unnoticed (the orchestrator once ran ~18h with no SOUL). Scan on every
+# startup so a blocked file is announced in the gateway log instead of dying
+# quietly. Non-fatal: never block startup on the check itself.
+/opt/qnoe-agent/hermes-venv/bin/python3 /opt/qnoe-agent/scripts/soul_health.py --json \
+    > /opt/qnoe-agent/logs/soul_health.json 2>/dev/null || true
+echo -n "[startup] " ; /opt/qnoe-agent/hermes-venv/bin/python3 \
+    /opt/qnoe-agent/scripts/soul_health.py --line || true
+
 # Launch Hermes gateway (uses active profile: qnoe-orchestrator)
 exec /opt/qnoe-agent/hermes-venv/bin/hermes gateway run --replace -v

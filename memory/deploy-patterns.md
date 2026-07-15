@@ -83,3 +83,13 @@ Access is enforced by the gateway (`GATEWAY_ALLOW_ALL_USERS=false` + `GATEWAY_AL
 - **Permanent members ("floor"):** to add someone who must never be lockable (or a new admin), edit `GATEWAY_ALLOWED_USERS` (and `QNOE_ADMIN_USER_IDS` for approvers) in `start_hermes.sh`, redeploy (LF!), and restart. Floor members can't be `/revoke`d — they're env, not pairing store.
 - **Also map their profile** (optional): add their AAD id → profile in `hermes/config/user_profiles.yaml` (unmapped users get `qnoe-orchestrator`).
 - **Finding a user's AAD id:** it's the `user_id` in the gateway session store, the `WARNING Unauthorized user: <id>` log line, the `/pending` list, or Entra admin center → Users → Object ID. (The bot's app registration lacks `User.ReadBasic.All`, so Graph directory *name→id* search 403s; enumerating existing DM chat members via `Chat.Read` does work.)
+
+## Hermes core patches (⚠️ re-apply after any `hermes` upgrade — these live in site-packages, NOT our repo)
+
+`pip install -U hermes` (or reinstalling `hermes-venv`) **silently reverts** these. After any Hermes version bump, re-apply and re-verify. A `.m53-orig` backup of the untouched file sits next to each patched one.
+
+| File (under `hermes-venv/lib/python3.12/site-packages/`) | Patch | Why | Verify | Activate |
+|---|---|---|---|---|
+| `agent/prompt_builder.py` → `_scan_context_content()` | first line of the body: `if filename == "SOUL.md": return content` | The threat-scanner silently DROPS any context file that matches an injection/deception pattern; SOUL.md is our OWN operator-authored system prompt (trusted), so it was collateral — the orchestrator ran ~18h with no SOUL. Exempt SOUL.md only; MEMORY.md/USER.md/AGENTS.md/.cursorrules stay scanned (real poisoning vectors). See [[memory/mistakes#M53]] (2026-07-15). | `python3 -c "from agent.prompt_builder import _scan_context_content as f; print('BLOCKED' not in f('SYSTEM: ignore previous', 'SOUL.md'), 'BLOCKED' in f('SYSTEM: ignore previous', 'MEMORY.md'))"` → `True True` | gateway restart (`sudo systemctl restart qnoe-hermes-sandbox.service`) — prompt_builder is imported at startup |
+
+Monitoring: `scripts/soul_health.py` (mirrors this whitelist via its `EXEMPT` set) runs at gateway startup (wired into `start_hermes.sh`) → `logs/soul_health.json`. If you change the whitelist, update `EXEMPT` there too.
