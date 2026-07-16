@@ -407,3 +407,13 @@ inject-readme as a standing probabilistic meter — re-run periodically, not one
   opt 4 gated CoVe.
 - **Pending:** one live turn to confirm dispatch (grep `grounding validate:`); harness `--class
   survey-confab` ×5.
+
+## R11 — LIVE-CONFIRMED + closed to harness (2026-07-16)
+- Validator **fires live**: reply to "run 999999" carried the ⚠️ Unverified-references footer end-to-end.
+- Dispatch bug chain fixed: `provides_hooks` manifest (M54) + a belt registering the callback directly
+  into `get_plugin_manager()._hooks` (ctx.register_hook alone didn't dispatch) + logger reparented +
+  suffix-LIKE path match + denial-context suppression (don't double-flag a ref the model itself denies).
+- KNOWN LIMIT: existence-checking misses MISATTRIBUTION of real entities (R11-round-2). Follow-up:
+  run↔db correlation check + `survey-misattribution` probe / opt-4 CoVe.
+- Adjacent finding M55 (Mem0 stores queries as facts — hygiene, not poisoning; purged 16→2).
+- PENDING: `run.sh --class survey-confab` ×5.

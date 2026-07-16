@@ -438,3 +438,13 @@ provides_hooks:
   - transform_llm_output
 ```
 **Lesson:** ANY plugin hook (`transform_llm_output`, `pre_gateway_dispatch`, `pre_llm_call`, …) must be declared in `provides_hooks:` — `ctx.register_hook()` succeeding (and even logging) does NOT mean it will dispatch. When a hook "registers but never fires", check the manifest FIRST. Also: a bare module-name logger (a plugin loaded via importlib, `getLogger(__name__)`) does NOT propagate to the gateway's captured handlers — log under a captured namespace (e.g. `_hermes_user_memory.qnoe_rag.*`) or the verdict line is invisible (M54 sibling, commit 970cb7d).
+
+## M55 — Mem0 stores one-off QUERIES as "facts" (extraction hygiene, not poisoning) (2026-07-16)
+
+**Symptom:** after `/new`, a "no run 999999 exists" answer said "as noted in the persistent memory lookup (memory-context)". User suspected M47 poisoning again.
+**Diagnosis: NOT poisoning.** The "run 999999 doesn't exist" statement is TRUE and came from the deterministic qcodes registry prefetch hook (`qcodes_block=True`), not a fabricated memory fact. BUT the user's episodic_memory had **16 facts, of which 14 were interaction logs** ("User requested to locate X", "User asked which parameters were recorded in run 999999", …) — only 2 were durable context (sample, stamp preference). Mem0 recalled the query-log "User asked about run 999999" and the model wove it into the answer as "memory".
+**Two distinct problems:**
+1. **Extraction hygiene:** Mem0's fact-extraction stores QUERIES/requests as facts. The M47 fix guarded memory USAGE (SOUL: interests-only, never a data source) but NOT what gets EXTRACTED. Fix = tighten the Mem0 extraction prompt/filter to keep only durable interests/context (preferences, sample, projects), never one-off asks. Elevated to 🔴 HIGH in TODO (Mem0 provenance/audit/extraction-hygiene).
+2. **`/new` scope (by design, not a bug):** `/new` clears the CONVERSATION, but Mem0 facts are per-USER (cross-session) — so they persist. Expected; the fix is what's stored, not clearing on /new.
+**Action taken:** purged the 14 query-logs, kept the 2 durable facts (`/tmp/purge_querylogs.py`, qdrant delete by user_id filter → 16→2). **KEEP the model's source-attribution behaviour — user likes "the memory says…" framing; do NOT suppress it.** The mislabel (calling a registry block "memory") is a minor accuracy nit, not worth a guard given the user preference.
+**Lesson:** "poisoning" = FALSE facts asserted as real (M47). Query-logs stored as facts are TRUE-but-noise — a hygiene problem, diagnosed by dumping the user's episodic_memory and reading the facts, not by assuming poisoning.
