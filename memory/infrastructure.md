@@ -1,5 +1,5 @@
 # Infrastructure
-*Last updated: 2026-07-14 (B7 systemd sandbox on qnoe-hermes)*
+*Last updated: 2026-07-16 (context-block tally timer; nightly cron section corrected to live 2-line crontab)*
 
 > DGX hardware, services, networking, and system-level config.
 > Full setup guide: [[DGX_SETUP]] · Current state: [[SETUP_LOG]] · Deploy procedures: [[memory/deploy-patterns]]
@@ -189,10 +189,15 @@ Added 2026-07-03. Two Teams-connected sites ingested via Microsoft Graph API (de
 cd /opt/qnoe-agent && SHAREPOINT_USERNAME=... SHAREPOINT_PASSWORD=... python -m agent.ingest.sharepoint_sync --validate
 ```
 
-## Nightly Cron
+## Nightly Cron (live crontab verified 2026-07-16 — two lines, both yzamir)
 
 ```bash
-0 2 * * * PYTHONPATH=/opt/qnoe-agent QDRANT_URL=http://localhost:6333 REPOS_DIR=/opt/qnoe-agent/repos AGENT_DATA_DIR=/home/yzamir/qnoe_server_data SERVER_ROOT=/ICFO/groups/NOE COLLECTIONS_CONFIG=/opt/qnoe-agent/config/repo_collections.yaml /opt/qnoe-agent/venv/bin/python -m agent.indexing.nightly_run >> /opt/qnoe-agent/logs/nightly_reindex.log 2>&1
+0 2 * * * PYTHONPATH=/opt/qnoe-agent QDRANT_URL=http://localhost:6333 REPOS_DIR=/opt/qnoe-agent/repos SERVER_DATA_DIR=/home/yzamir/qnoe_server_data SERVER_ROOT=/ICFO/groups/NOE COLLECTIONS_CONFIG=/opt/qnoe-agent/config/repo_collections.yaml /opt/qnoe-agent/venv/bin/python -m agent.indexing.nightly_run >> /opt/qnoe-agent/logs/nightly_reindex.log 2>&1
+0 7 * * * PYTHONPATH=/opt/qnoe-agent NIGHTLY_REPORT_JSON=/opt/qnoe-agent/logs/nightly_report.json /opt/qnoe-agent/venv/bin/python -m agent.reporting.post_report >> /opt/qnoe-agent/logs/daily_report.log 2>&1
 ```
 
-4 tasks: Qdrant snapshots, repo re-index, change queue processing, orphan cleanup. See [[memory/ingestion]] for details.
+6 tasks at 02:00: Qdrant snapshots, repo re-index, SharePoint sync, change queue, orphan cleanup, **context_blocks** (reads the tally, see below). The 07:00 line posts the report to the Teams "Agent Logs" channel — post_report is NOT called from nightly_run, it's this separate cron. See [[memory/ingestion]] for task details.
+
+## Context-block tally timer (2026-07-16)
+
+`qnoe-context-tally.timer` → `qnoe-context-tally.service` (`/etc/systemd/system/`, repo copies in `config/`): hourly at :17, oneshot as **qnoe-ai OUTSIDE the sandbox** (needs to read the 0700 `profiles/*/logs/agent.log`). Parses threat-scanner block WARNINGs → `logs/context_blocks.jsonl` + fresh `soul_health.py` scan → `logs/soul_health.json`. Consumed by the nightly `task_context_blocks`. Details: [[memory/agent-code#Context-block tally]].

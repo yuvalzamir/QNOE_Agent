@@ -1,6 +1,8 @@
 # Context-Block Tracking + Regular Review — Implementation Plan
 
-*Written: 2026-07-15 · Status: PLANNED, not executed · Source: TODO.md line 32 (user request 2026-07-15)*
+*Written: 2026-07-15 · Status: **EXECUTED + DEPLOYED 2026-07-16** (see [[TODO]] ✅ item + [[memory/agent-code#Context-block tally]]) · Source: TODO.md line 32 (user request 2026-07-15)*
+
+> Execution deltas vs this plan: (1) MEMORY/USER live at `profiles/<p>/memories/` and are scanned PER-ENTRY at **strict** scope by `tools.memory_tool` (second warning format: `Memory entry from <name> blocked at load time: <ids>`) — `soul_health.py` was rewritten to mirror both surfaces; (2) RAG chunks/tool results are NOT scanned by this Hermes core — no tracking gap; (3) the post_report "wiring mystery" resolved benignly: it's a separate 07:00 cron line, no live-only edit existed; (4) event kinds are `context_file`/`memory_entry`/`anomaly` (no `rag`/`tool_result`).
 
 > Hand-off plan in the style of [[CONTEXT_EXECUTION_PLAN]] / [[GPT_OSS_CUTOVER_PLAN]]. Everything here is design — no code deployed yet.
 

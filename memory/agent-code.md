@@ -1,5 +1,5 @@
 # Agent Code
-*Last updated: 2026-07-10 (find_file plugin: CIFS+SP file search)*
+*Last updated: 2026-07-16 (context-block tally)*
 
 > Agent source files, message flow, tools, and how the pieces connect.
 > Full guide: [[AGENT_CODE_GUIDE]] · Framework design: [[AGENT_FRAMEWORK]] · Migration audit: [[MIGRATION_AUDIT]]
@@ -151,3 +151,18 @@ Window raised 32K → 64K (`context_length: 65536`, compaction now ~48K at thres
 - **Core tools NEVER defer.** `tools/tool_search.py`: everything in `toolsets._HERMES_CORE_TOOLS` is hard-excluded from deferral ("No exceptions"). With our profiles, `classify_tools()` shows **all 12 resident tools are core, 0 deferrable → Tool Search is a no-op** (only qnoe-lab plugin tools defer).
 - **Per-tool schema cost** (chars/4, QTM profile): terminal 1,419 · skill_manage 1,040 · memory 694 · execute_code 604 · clarify 490 · patch 482 · search_files 446 · process 318 · write_file 288 · read_file 262 · skill_view 232 · skills_list 76 = **~6,351 tok, 100% core**.
 - **The slimming lever is toolset *composition*:** profile `toolsets:` feeds `get_tool_definitions(enabled_toolsets=…)`; basic toolsets exist (`file` 1,478 · `terminal` 1,737 · `skills` 1,348 · `memory` 694 · `code_execution` 604 · `clarify` 490). Planned: `toolsets: [file, terminal, clarify, qnoe-lab]` → ~3.7K (see [[CONTEXT_EXECUTION_PLAN]] §2). No config knob disables *individual* core tools (`platform_toolsets` is toolset-level too). Wrapper fallback: re-expose a dropped core capability as a plugin tool — plugin tools ARE deferrable.
+
+## Context-block tally (2026-07-16)
+
+Tracks what the Hermes threat-scanner silently drops from context ([[TODO]] "Context-block tracking", lineage [[memory/mistakes#M53]]). Plan/rationale: [[CONTEXT_BLOCK_TRACKING_PLAN]].
+
+**Two production scan surfaces (verified in site-packages 2026-07-16):**
+1. `agent.prompt_builder._scan_context_content` — context files entering the system prompt (SOUL.md whitelisted; .hermes.md/AGENTS.md/CLAUDE.md/.cursorrules still scanned), scope=`context`, WHOLE file → `[BLOCKED: …]` placeholder. Warning: `Context file <name> blocked: <ids>`.
+2. `tools.memory_tool._sanitize_entries_for_snapshot` — persistent memory at `profiles/<p>/memories/{MEMORY,USER}.md`, split on `"\n§\n"` (ENTRY_DELIMITER), each entry scanned at scope=`strict` (superset of context); only the matching ENTRY is replaced. Warning: `Memory entry from <name> blocked at load time: <ids>`.
+RAG chunks / tool results are NOT threat-scanned in this Hermes version — nothing to track there.
+
+**Pipeline:** `qnoe-context-tally.timer` (hourly at :17, `Persistent=true`) → `qnoe-context-tally.service` (oneshot, **User=qnoe-ai, OUTSIDE the sandbox** — must read the 0700 profile logs) → `scripts/context_block_tally.py`: incremental agent.log parse (per-file inode+offset state, partial-line safe, hash dedup) → append `logs/context_blocks.jsonl` (30d self-prune) + re-run `soul_health.py --json` → atomic `logs/soul_health.json` + `logs/context_block_tally.state.json`. All outputs 0664 qnoe-ai so the yzamir nightly can read them. Nightly: `task_context_blocks` in `nightly_run.py` (24h summary by profile/file/pattern + static-scan state) rendered by `post_report._task_detail`. Self-monitoring: stale/missing tally → warning or task FAILURE (never "clean"); unparsed block-ish lines → `kind=anomaly` events + report flag (core format drift, see [[memory/deploy-patterns]]).
+
+**soul_health.py (rewritten 2026-07-16):** now mirrors BOTH surfaces — previously it scanned SOUL/MEMORY/USER at the profile ROOT with context scope, but MEMORY/USER actually live in `memories/` and are scanned per-entry at strict scope, so it effectively covered only the 3 exempt SOULs. Now 6 files (3 SOUL + 3 memories/MEMORY.md; USER.md picked up if it appears).
+
+**Ops:** run now = `sudo systemctl start qnoe-context-tally.service`; status via `logs/context_block_tally.state.json` (`last_run`); disable = `sudo systemctl disable --now qnoe-context-tally.timer`. Rollback files: `*.bak-pre-tally` next to nightly_run.py / post_report.py / soul_health.py on the DGX.
