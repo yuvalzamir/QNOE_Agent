@@ -1,5 +1,5 @@
 # Ingestion & RAG Pipeline
-*Last updated: 2026-07-16 (full server re-ingest via /mnt/noe — parallel + memory-gated semaphore + text-layer routing)*
+*Last updated: 2026-07-16 (SP coverage audit run — noe-group General at 53%; + full server re-ingest via /mnt/noe)*
 
 > File discovery, chunking, embedding, Qdrant indexing, watcher daemon, QCoDeS scanner.
 > Watcher design: [[WATCHER_PLAN]] · Repo mapping: [[REPO_MAPPING]] · Memory design: [[INFERENCE_MEMORY]]
@@ -100,6 +100,18 @@ Files: `agent/ingest/sharepoint_client.py` (Graph API wrapper), `agent/ingest/sh
 **`web_url` column (2026-07-10, for `find_file` tool):** `sp_manifest` now stores the SharePoint web link. `_record_item()` writes it on every delta/full sync (auto-migrates via `PRAGMA`/`ALTER` in `_get_sp_manifest_conn`). Existing 22,102 rows backfilled from Qdrant chunk payloads (`source` field) by `agent/indexing/backfill_sp_weburl.py` — idempotent, only touches `web_url IS NULL/''`, batched `client.retrieve` per collection. Wired into nightly `task_sync_sharepoint` as a safety net (runs AFTER the sites loop → skipped if SP auth fails that night; the one-time backfill already made the manifest 100% complete).
 
 **Nightly SP creds — ANALYZED 2026-07-10, already fixed (no action needed):** older nightly `task_sync_sharepoint` called `authenticate()` without loading the secrets file, so it failed under cron (`Missing credentials`, traceback at old `nightly_run.py:154`) — the cron runs as `yzamir`, whose env lacks `SHAREPOINT_USERNAME/PASSWORD`. The current code loads `/opt/qnoe-agent/secrets/sharepoint.env` (640 qnoe-ai:qnoe-ai; `yzamir` reads it via the qnoe-ai group) via `os.environ.setdefault` before auth. Log confirms the 3 failures were on the OLD code; the last 2 runs (incl. Jul 10 02:01 cron) returned `OK` (processed=0 is normal — the 30-min poller already advanced the shared delta link). Replaying the loader as `yzamir` sets both vars non-empty. Residual brittleness only: creds depend on that one file + in-code parse (rotate/move breaks it), and the new web_url backfill sits *after* `authenticate()` so it's skipped on any night auth fails.
+
+## SharePoint coverage audit (2026-07-16) — SP had its own silent gap
+
+**`scripts/sharepoint_coverage_audit.py`** (per [[SHAREPOINT_COVERAGE_AUDIT_PLAN]]) — read-only present-vs-indexed reconciliation, the SP analog of `coverage_audit.py`. Streams the Graph delta listing page-by-page (never accumulates the ~676K-page noe-group item dicts — RAM-safe during the ingest sprint), mirrors the sync's exact filters (extensions, exclude_folders, `EXCLUDE_PATH_SUBSTRINGS`, `max_file_mb`) so present = "sync should have indexed it", reads `sp_manifest` with `mode=ro&immutable=1` (M52 cross-UID WAL trap), Qdrant point-count cross-check, tenant `/sites?search=*` discovery, 401/403 → "denied" section. **Exit code 1 = findings (unit shows "failed" — by design).** Runs as qnoe-ai via one-shot `qnoe-sp-audit.service` (EnvironmentFile-style `source` of `secrets/sharepoint.env`); output → `logs/sp_coverage_audit.{txt,log}`. Full noe-group run ≈ 43 min (~3,400 delta pages @ ~1.5 pages/s).
+
+**First-run findings (2026-07-16, audit only — re-sync deliberately NOT run):**
+- **noe-group: 53% coverage in General** — 13,376/25,058 indexed, ~11.7K files missing (Conferences, Grants, Proposals…). Patents 60/94 (63%), NOE-FAB 5/8. Site totals: present 25,261 / indexed 21,859 / missing 11,722 / **orphans 8,320** (indexed rows whose SP path no longer exists — no SP orphan sweep exists, see above).
+- **twisted-materials healthy:** QTOM 97%, SpectroMag 93%; 55 orphans (likely pre-exclusion rows: General/OneNote Uploads/etc. were indexed before `exclude_folders` landed).
+- **Filter gap found:** SP sync's `EXCLUDE_PATH_SUBSTRINGS` lacks `.ipynb_checkpoints/` (watcher.yaml has it for CIFS; M56 class) — 1 junk file present, flag it when next touching the sync.
+- **Tenant scan:** 45 sites visible to the credential, 43 not in config — mostly ICFO-wide social/admin (deliberate exclusions), but **"QNOE AI" (`/sites/QNOEAI`) and "Galleries" (`/sites/NOE-Group/Galleries`, a NOE-Group subsite)** look lab-relevant → user decision whether to add to `config/sharepoint.yaml`.
+- **Denied section: empty** (no 401/403). Qdrant cross-check **inconclusive** — point-count timed out (30s) under ingest-sprint load; re-run when the box is idle.
+- Remediation (NOT executed): `sharepoint_sync.py --full --site noe-group` (etag dedup makes it incremental) + wire the audit into the nightly report.
 
 ## Collection health audit — group-wide growth & SP duplicates (2026-07-10)
 
