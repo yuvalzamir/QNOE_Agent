@@ -6,7 +6,7 @@
 
 ## GitHub Repository
 
-**URL:** https://github.com/yuvalzamir/QNOE_Agent.git
+**URL:** https://github.com/QNOE-group/QNOE_Agent.git
 **Branch:** `master`
 **Setup:** 2026-07-06 — initial commit of 106 files.
 
@@ -15,7 +15,7 @@
 
 ```bash
 # Clone
-git clone https://github.com/yuvalzamir/QNOE_Agent.git
+git clone https://github.com/QNOE-group/QNOE_Agent.git
 
 # Push changes
 cd Z:/code/AI_Student && git add -A && git commit -m "..." && git push
