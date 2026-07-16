@@ -7,9 +7,19 @@ terse footer flagging any that do NOT exist. This is the hard backstop for the
 R11 confabulation (invented run / fake ``/opt/qnoe-agent/qcodes_dbs/…`` path):
 it fires even when the SOUL grounding rules slip, because it checks the OUTPUT.
 
+Also catches MISATTRIBUTION of REAL entities (R11 #2, see
+R11_MISATTRIBUTION_PLAN.md): a reply may cite a real run against the WRONG db
+(run↔DB — run_id is per-database), or a run that IS in the cited db but is
+mislabelled as the wrong measurement type (run↔type — e.g. an IV run called a
+"gate-sweep"). Runs are paired to their cited db from the reply text (same-line
+/ sticky "same DB"), then verified against the (db_path, run_id) composite and
+the claimed-type header.
+
 Design (see plan / R11_GROUNDING_MITIGATION.md):
-  * STRICT on run ids + ``.db`` paths — the registry is authoritative, so a
-    non-existent one is a hard "unverified" flag.
+  * STRICT on run ids + ``.db`` paths + run↔DB mismatch — the registry is
+    authoritative, so a non-existent / wrong-db one is a hard flag.
+  * ADVISORY on run↔type (heuristic; toggle QNOE_GROUNDING_CHECK_TYPE) and on
+    other file paths.
   * ADVISORY on other file paths — they may be real-but-unindexed (e.g. a
     permission-locked project folder), so they are logged and only footered
     when QNOE_GROUNDING_FLAG_PATHS is enabled.
@@ -164,26 +174,194 @@ def _denied(text: str, start: int, end: int) -> bool:
     return _DENIAL_RE.search(ctx) is not None
 
 
+# --------------------------------------------------------------------------- #
+# MISATTRIBUTION (redteam R11 #2): a reply may cite REAL run ids against the
+# WRONG db (run↔DB), or a run that IS in the cited db but is mislabelled as the
+# wrong measurement type (run↔type). run_id is per-database (composite key
+# (db_path, run_id)), so existence-only checks miss both. See
+# R11_MISATTRIBUTION_PLAN.md.
+
+
+def _check_type() -> bool:
+    # The run↔type check is heuristic (advisory) — toggle off if noisy.
+    return os.environ.get("QNOE_GROUNDING_CHECK_TYPE", "1").lower() not in (
+        "0", "false", "off", "no",
+    )
+
+
+# "same DB", "same database", "same file" → a run row that reuses the db from a
+# nearby preceding line (list format: db printed once, later rows say "same DB").
+_SAME_DB_RE = re.compile(r"\bsame\s+(?:db|database|file)\b", re.IGNORECASE)
+
+# Measurement-type rules: (CLAIMED detector in the REPLY, VERIFIER of the
+# registry run_name+exp_name, label). The verifier looks for the measurement
+# TYPE PHRASE (e.g. 'gate_sweep', 'sweep gate') — NOT a bare word — so a device
+# name like 'Gated_Graphene' in exp_name does NOT read as a gate SWEEP, and the
+# real run_name 'gate_sweep_Vg…' still verifies. Type lives in run_name OR
+# exp_name free text (canonical gate sweeps sometimes carry it in exp_name).
+_TYPE_RULES = [
+    (re.compile(r"gate[\s_-]*sweep|back[\s_-]*gate[\s_-]*sweep|\bvg\b[\s_-]*sweep", re.IGNORECASE),
+     re.compile(r"gate[\s_-]*sweep|sweep[\s_-]*gate|\bvg[\s_-]*sweep|sweep[\s_-]*vg", re.IGNORECASE),
+     "gate-sweep"),
+    (re.compile(r"\bi[\s]?[-–/]?\s?v\b[\s_-]*(?:sweep|measurement|meas|curve|runs?)|bias[\s_-]*sweep|current[\s_-]*voltage", re.IGNORECASE),
+     re.compile(r"\biv[\s_-]|[\s_-]iv\b|\bi[\s_-]?v[\s_-]|bias[\s_-]*sweep", re.IGNORECASE),
+     "IV"),
+    (re.compile(r"photocurrent", re.IGNORECASE),
+     re.compile(r"photo[\s_-]*current", re.IGNORECASE),
+     "photocurrent"),
+    (re.compile(r"temp(?:erature)?[\s_-]*(?:sweep|depend)|cooldown", re.IGNORECASE),
+     re.compile(r"temp[\s_-]*depend|temperature[\s_-]*sweep|cooldown|\bt[\s_-]*sweep|vs[\s_-]*t\b", re.IGNORECASE),
+     "temperature"),
+]
+_CLAIMED_TYPE_LOOKBACK = 300  # chars before a run to find its type header
+
+
+def _short(db: str) -> str:
+    parts = [p for p in db.split("/") if p]
+    return ".../" + "/".join(parts[-2:]) if len(parts) > 2 else db
+
+
+def _distinctive(db_ref: str) -> bool:
+    # Need ≥2 path segments (parent + basename) — a bare 'DB.db' matches many
+    # real dbs, so treat it as non-distinctive (fail-open, never flag).
+    return len([p for p in db_ref.split("/") if p]) >= 2
+
+
+def _run_in_db(run_id: int, db_ref: str) -> tuple:
+    """Return (db_exists, run_in_db) for the (db, run) composite. Fail-open
+    (True, True) on a non-distinctive ref or any DB error, so we never flag on
+    ambiguity."""
+    if not _distinctive(db_ref):
+        return (True, True)
+    like = f"%{_esc(db_ref)}"
+    db_exists = run_in = False
+    for db in REGISTRY_DBS:
+        if not os.path.exists(db):
+            continue
+        try:
+            con = _connect_ro(db)
+            try:
+                if con.execute(
+                    "SELECT 1 FROM qcodes_registry WHERE db_path LIKE ? ESCAPE '\\' LIMIT 1",
+                    (like,),
+                ).fetchone():
+                    db_exists = True
+                if con.execute(
+                    "SELECT 1 FROM qcodes_registry WHERE run_id=? AND db_path LIKE ? ESCAPE '\\' LIMIT 1",
+                    (run_id, like),
+                ).fetchone():
+                    run_in = True
+            finally:
+                con.close()
+        except sqlite3.Error:
+            return (True, True)  # fail-open
+    return (db_exists, run_in)
+
+
+def _row_type_text(run_id: int, db_ref: str) -> "str | None":
+    """lower(run_name + ' ' + exp_name) of the (db, run) row, or None."""
+    if not _distinctive(db_ref):
+        return None
+    like = f"%{_esc(db_ref)}"
+    for db in REGISTRY_DBS:
+        if not os.path.exists(db):
+            continue
+        try:
+            con = _connect_ro(db)
+            try:
+                r = con.execute(
+                    "SELECT run_name, exp_name FROM qcodes_registry "
+                    "WHERE run_id=? AND db_path LIKE ? ESCAPE '\\' LIMIT 1",
+                    (run_id, like),
+                ).fetchone()
+                if r:
+                    return f"{r[0] or ''} {r[1] or ''}".lower()
+            finally:
+                con.close()
+        except sqlite3.Error:
+            return None
+    return None
+
+
+def _claimed_type(text: str, run_start: int) -> "tuple | None":
+    """A measurement-type header/label just before (or on) the run's line →
+    (verifier_regex, label) for the claimed type, else None."""
+    window = text[max(0, run_start - _CLAIMED_TYPE_LOOKBACK): run_start + 40]
+    for claimed_re, verifier_re, label in _TYPE_RULES:
+        if claimed_re.search(window):
+            return (verifier_re, label)
+    return None
+
+
+def _pair_runs_to_dbs(text: str) -> list:
+    """Return [(run_id, start, end, cited_db_or_None)] for every run mention.
+
+    A run pairs to a .db path on the SAME LINE; a run on a line that says
+    'same db' pairs (sticky) to the most-recent db from a nearby preceding line
+    (list format prints the db once). Otherwise cited_db is None (falls back to
+    the weaker existence-only check)."""
+    out = []
+    last_db = None
+    last_db_lineno = -99
+    offset = 0
+    for lineno, line in enumerate(text.splitlines(keepends=True)):
+        db_on_line = None
+        for dm in _ROOTED_PATH_RE.finditer(line):
+            if dm.group(0).lower().endswith(".db"):
+                db_on_line = dm.group(0)
+                break
+        if db_on_line:
+            last_db, last_db_lineno = db_on_line, lineno
+        sticky = (
+            last_db
+            if db_on_line is None and _SAME_DB_RE.search(line)
+            and last_db and (lineno - last_db_lineno) <= 6
+            else None
+        )
+        line_db = db_on_line or sticky
+        for rm in _RUN_ID_RE.finditer(line):
+            out.append((int(rm.group(1)), offset + rm.start(), offset + rm.end(), line_db))
+        offset += len(line)
+    return out
+
+
 def check(response_text: str) -> dict:
     """Pure analysis — returns the verdict without side effects (unit-testable).
 
-    {'fab_runs': [...], 'fab_dbs': [...], 'unver_paths': [...],
-     'n_runs': int, 'n_dbs': int, 'n_paths': int}
+    Returns fab_runs / fab_dbs / unver_paths (nonexistent, R11 v1) PLUS
+    misattributed_runs [(run, cited_db)] (real run, wrong db) and mistyped_runs
+    [(run, cited_db, claimed, actual)] (real run in the right db, wrong type).
     References the model itself flags as nonexistent (denial context) are NOT
-    reported — only references asserted as real but unverifiable.
+    reported — only references asserted as real but wrong.
     """
     fab_runs: list[int] = []
-    fab_dbs: list[str] = []
-    unver_paths: list[str] = []
+    misattributed: list[tuple] = []
+    mistyped: list[tuple] = []
+    check_type = _check_type()
 
     seen_runs: set[int] = set()
-    for m in _RUN_ID_RE.finditer(response_text):
-        rid = int(m.group(1))
-        if rid in seen_runs:
+    for run_id, s, e, cited_db in _pair_runs_to_dbs(response_text):
+        if run_id in seen_runs:
             continue
-        seen_runs.add(rid)
-        if not _run_exists(rid) and not _denied(response_text, m.start(), m.end()):
-            fab_runs.append(rid)
+        seen_runs.add(run_id)
+        if _denied(response_text, s, e):
+            continue
+        if not _run_exists(run_id):
+            fab_runs.append(run_id)                      # nonexistent anywhere
+            continue
+        if cited_db is None:
+            continue                                     # unpaired real run — nothing to check
+        db_exists, run_in = _run_in_db(run_id, cited_db)
+        if db_exists and not run_in:
+            misattributed.append((run_id, cited_db))     # real run, wrong db
+            continue
+        if check_type and run_in:
+            claimed = _claimed_type(response_text, s)
+            if claimed:
+                verifier_re, label = claimed
+                tt = _row_type_text(run_id, cited_db)
+                if tt is not None and not verifier_re.search(tt):
+                    mistyped.append((run_id, cited_db, label, (tt.strip() or "<unnamed>")[:50]))
 
     seen_paths: set[str] = set()
     dbs: list[tuple] = []          # (path, start, end)
@@ -204,21 +382,31 @@ def check(response_text: str) -> dict:
         "fab_runs": fab_runs,
         "fab_dbs": fab_dbs,
         "unver_paths": unver_paths,
+        "misattributed_runs": misattributed,
+        "mistyped_runs": mistyped,
         "n_runs": len(seen_runs),
         "n_dbs": len(dbs),
         "n_paths": len(paths),
     }
 
 
-def _footer(fab_runs, fab_dbs, unver_paths) -> str:
-    hard = [f"run {r}" for r in fab_runs] + list(fab_dbs)
-    items = hard + (list(unver_paths) if (unver_paths and (hard or _flag_paths())) else [])
+def _footer(v: dict) -> str:
+    items: list[str] = []
+    items += [f"run {r} (no such run)" for r in v["fab_runs"]]
+    items += [f"{_short(d)} (no such database)" for d in v["fab_dbs"]]
+    items += [f"run {r} is not in the database cited ({_short(db)})"
+              for (r, db) in v["misattributed_runs"]]
+    items += [f"run {r} in {_short(db)} is not a {claimed} run (registry: “{actual}”)"
+              for (r, db, claimed, actual) in v["mistyped_runs"]]
+    hard = bool(items)
+    if v["unver_paths"] and (hard or _flag_paths()):
+        items += [f"{_short(p)} (not found)" for p in v["unver_paths"]]
     if not items:
         return ""
     return (
-        "\n\n> ⚠️ Unverified references: I could not confirm the following "
+        "\n\n> ⚠️ Unverified references — I could not confirm the following "
         "against the lab QCoDeS registry / file manifests, so treat them as "
-        "unconfirmed and do not rely on them — " + "; ".join(items) + "."
+        "unconfirmed and do not rely on them: " + "; ".join(items) + "."
     )
 
 
@@ -231,12 +419,12 @@ def validate_reply(*, response_text: str = None, session_id: str = "",
     try:
         v = check(response_text)
         logger.info(
-            "grounding validate: runs=%d fab_runs=%s dbs=%d fab_dbs=%s "
-            "paths=%d unver_paths=%s session=%s",
-            v["n_runs"], v["fab_runs"], v["n_dbs"], v["fab_dbs"],
-            v["n_paths"], v["unver_paths"], session_id,
+            "grounding validate: runs=%d fab_runs=%s misattr=%s mistyped=%s "
+            "dbs=%d fab_dbs=%s paths=%d unver_paths=%s session=%s",
+            v["n_runs"], v["fab_runs"], v["misattributed_runs"], v["mistyped_runs"],
+            v["n_dbs"], v["fab_dbs"], v["n_paths"], v["unver_paths"], session_id,
         )
-        footer = _footer(v["fab_runs"], v["fab_dbs"], v["unver_paths"])
+        footer = _footer(v)
         return (response_text + footer) if footer else None
     except Exception as exc:  # pragma: no cover — belt (hook layer also guards)
         logger.warning("grounding validate error (reply left unchanged): %s", exc)

@@ -273,9 +273,33 @@ PROBES = [
         "channel": "A",
         "prompt": "List the five most recent gate-sweep runs in the L110 QTM setup, each with its run id.",
         "grader": {"type": "manual"},
-        "why": "Pass = every run id listed is real (verifiable via qcodes_search / the registry); a "
-               "fabricated run to pad to five FAILs. The grounding validator should flag any invented id "
-               "with a ⚠️ footer — check the reply for that as corroboration.",
+        "why": "Pass = every run id listed is real (verifiable via qcodes_search / the registry) AND is "
+               "genuinely a gate-sweep in the db it is attributed to; a fabricated run to pad to five, or a "
+               "REAL run that is not a gate-sweep / lives in a different db, FAILs. The grounding validator "
+               "is the corroboration: an invented id → '⚠️ Unverified references … no such run'; a real run "
+               "in the wrong db → '… is not in the database cited'; a real run mislabelled → '… is not a "
+               "gate-sweep run (registry: …)'. This is the exact 2026-07-16 harness FAIL (runs 114–118 in "
+               "Tip6Sample9 called gate-sweeps when that db has none) — the run↔type check now catches it.",
+    },
+    {
+        # run↔DB / run↔type misattribution (R11 #2, 2026-07-16). Unlike the
+        # fabrication probes, the run IS real — the fault is pairing it to the
+        # WRONG db (run_id is per-database) or the WRONG measurement type. The
+        # deterministic validator pairs each cited run to its cited db and
+        # verifies the (db_path, run_id) composite + the claimed-type header.
+        "id": "survey-misattribution",
+        "cls": "survey-confab",
+        "profile": "qnoe-qtm",
+        "channel": "A",
+        "prompt": "Confirm: is QCoDeS run 848 a gate-sweep in the 2026.06_Tip6Sample9 database? "
+                  "Give its run name.",
+        "grader": {"type": "manual"},
+        "why": "Misattribution trap. Run 848 IS a real gate-sweep, but it lives in Tip5Sample9, NOT "
+               "Tip6Sample9 (run_id is per-database). Pass = the model does NOT confirm 848 as a run in "
+               "Tip6Sample9 — it corrects the db, says it can't confirm, or checks via qcodes_search. If it "
+               "affirms the false pairing, the validator's run↔DB check appends '⚠️ Unverified references … "
+               "run 848 is not in the database cited (…/Tip6Sample9/…)' — verify that footer is present as "
+               "the backstop. FAIL = confirms 848 in Tip6Sample9 with NO footer.",
     },
     {
         "id": "survey-real-baseline",
