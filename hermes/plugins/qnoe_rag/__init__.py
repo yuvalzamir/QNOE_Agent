@@ -446,6 +446,25 @@ _FILE_NOUN_RE = re.compile(
     r"\.(?:py|ipynb|docx?|pdf|pptx?|xlsx?|md|db|ya?ml|txt|csv|json|h5))\b",
     re.IGNORECASE,
 )
+# A bare filename/identifier STEM the user clearly wants located, carrying no
+# file-noun word and no extension: a separator-joined, digit-bearing token such
+# as 'photocurrent_SLG_240206', 'L208_Opticool', 'SLG09-C2-PhQH'. Without this,
+# "where is photocurrent_SLG_240206" failed the noun gate and never fired the
+# hook (adding '.pptx' was needed to trip it) — the R11 find_file bare-name gap.
+# The digit requirement keeps it off ordinary hyphenated words ('back-gate') and
+# dates ('2026-07-16', no letter); the length/separator requirement keeps it off
+# short codes ('L110').
+_FILENAME_STEM_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9]*(?:[_-][A-Za-z0-9]+)+\b")
+
+
+def _stem_terms(message: str) -> list:
+    """Digit-bearing, separator-joined filename stems in the message (order-
+    preserving, deduped). These are strong 'locate this exact name' signals."""
+    out = []
+    for s in _FILENAME_STEM_RE.findall(message):
+        if any(c.isdigit() for c in s) and s.lower() not in _FIND_STOP and s not in out:
+            out.append(s)
+    return out
 _FIND_STOP = {
     "the", "a", "an", "of", "about", "for", "on", "in", "to", "setup", "document",
     "documentation", "file", "files", "find", "locate", "where", "is", "are",
@@ -482,6 +501,9 @@ def _extract_terms(message: str) -> list:
         r'\b([\w.-]+\.(?:py|ipynb|docx?|pdf|pptx?|xlsx?|md|db|ya?ml|txt|csv|json|h5))\b',
         message, re.IGNORECASE,
     )
+    # full separator-joined stems first (e.g. 'photocurrent_SLG_240206') so the
+    # whole identifier is preferred over its trailing digit-run ('240206')
+    terms += _stem_terms(message)
     # distinctive codes / CamelCase / ALLCAPS / alphanumeric device IDs
     terms += re.findall(r'\b([A-Za-z]*\d[\w-]*|[A-Z][a-z]+[A-Z]\w*|[A-Z]{2,}\w*)\b', message)
     out = []
@@ -501,7 +523,11 @@ def _extract_terms(message: str) -> list:
 
 
 def _find_file_block(message: str) -> str:
-    if not message or not (_FIND_INTENT_RE.search(message) and _FILE_NOUN_RE.search(message)):
+    if not message or not _FIND_INTENT_RE.search(message):
+        return ""
+    # Fire on an explicit file noun / extension OR a bare filename stem — the
+    # latter closes the "where is photocurrent_SLG_240206" gap.
+    if not (_FILE_NOUN_RE.search(message) or _stem_terms(message)):
         return ""
     terms = _extract_terms(message)
     if not terms:

@@ -1,8 +1,31 @@
 # Ingestion & RAG Pipeline
-*Last updated: 2026-07-10 (web_url + backfill for find_file; group-wide health audit)*
+*Last updated: 2026-07-16 (full server re-ingest via /mnt/noe — parallel + memory-gated semaphore + text-layer routing)*
 
 > File discovery, chunking, embedding, Qdrant indexing, watcher daemon, QCoDeS scanner.
 > Watcher design: [[WATCHER_PLAN]] · Repo mapping: [[REPO_MAPPING]] · Memory design: [[INFERENCE_MEMORY]]
+
+## Full server re-ingest (2026-07-16) — recovering the silent ~2/3 gap
+
+**Why:** [[memory/mistakes#M58]] — the server doc corpus was ~2/3 UNINDEXED for months with zero errors. Two gap classes: (1) **ACL** — the `/ICFO/groups/NOE` mount uses the `yzamir` cred, ACL-denied on 645+ folders (Theses 19/3345, etc.); (2) **find-timeout** — M7's 300s `find` cap silently truncated big *readable* folders (Manuscripts 311/5450). M7 was fixed in `qcodes_scanner` but never propagated to `run_ingest`. Neither surfaced as an error → looked "covered."
+
+**Fix — one-time full re-ingest through the broad mount:**
+- **Read `/mnt/noe`** (cred `sberlanga`, uid=qnoe-ai, mode 0755 → broad access), **store `/ICFO/groups/NOE` paths** (so stored `source` matches what the nightly/agent see). Normalization: `run_ingest._store_key()` rewrites `INGEST_READ_ROOT`→`INGEST_STORE_ROOT`.
+- Launcher `scripts/run_full_server_ingest.sh`; orchestrator `agent/ingest/parallel_server_ingest.py`; plan [[FULL_SERVER_INGEST_PLAN]].
+- **Cached find-manifest** (`/home/yzamir/qnoe_server_data/full_scan_filelist.txt`, 48,564 files) — no re-`find` on resume; `--refresh-find` to rescan. **No timeout on find** (M7 lesson, finally applied here too).
+- **Excludes:** Fabrication (kept, user reversed), Personal, Notebook (77 private per-person notebooks stay `/ICFO`-scoped — must NOT be recovered via the broad mount), `.txt` (raw measurement dumps).
+- Coverage-scoped SERVER_FOLDERS expanded to 20 level-0 folders in `ingest_server.py`.
+
+**Parallelism — memory-gated semaphore, NOT ProcessPoolExecutor:** a persistent pool worker ballooned to 31GB on one Docling file → OOM-killer reaped all workers ([[memory/mistakes#M58]] sibling). Replaced with subprocess batches: launch a new `run_ingest --file-list` subprocess (BATCH_SIZE=40 files) only while `concurrent < WORKERS AND MemAvailable ≥ MIN_FREE_GB`. Each batch **exits and frees Docling memory every 40 files** (crash-isolated + resumable). `_mem_available_gb()` reads `/proc/meminfo`. Defaults: WORKERS=8, MIN_FREE_GB=50.
+
+**Speed stack (~5× — days→~1 day):**
+- `PDF_TEXTLAYER_FAST=1` — born-digital PDFs (pypdf finds a text layer) take the fast pypdf path, skipping the slow Docling layout pass; only genuinely-scanned (no-text) PDFs go to Docling+OCR (`splitter._chunk_pdf` Step 4).
+- `INGEST_STAGE_LOCAL=1` — read each new file **once** over CIFS (`path.read_bytes()`), hash + extract from the same bytes via a `/tmp` temp; CIFS bandwidth is the bottleneck, this halves it.
+- `INGEST_SKIP_IF_INDEXED=1` — skip manifest-present files WITHOUT re-reading them over CIFS (makes resume instant). **Nightly leaves this OFF** (it must re-hash to detect changes).
+- `DOCLING_MAX_FILE_BYTES=25MB` — skip explosion-prone huge PDF/PPTX.
+
+**Ran as a sprint with vLLM OFF (D-note):** vLLM (gpt-oss-120b, 4×64K KV) holds ~92GB RAM; coexisting with ingest workers (~11GB each) throttled the semaphore to ~0.6 files/min (~48 days). Verdict: **stop vLLM, sprint the ingest (~1 day), agent down meanwhile** — cleaner than a fortnight of degraded coexistence. (I mis-stated vLLM's footprint three times before measuring it — measure `free -g` with the service up, don't trust memory of it.)
+
+**Acceptance + standing check:** `scripts/coverage_audit.py` — per-folder PRESENT (via `/mnt/noe` find-cache) vs INDEXED (manifest under `/ICFO`), flags <80%. `--json`/`--line`. Run it after the sprint as the acceptance test (want all folders ≥ threshold); **STILL OPEN** — wire it into the nightly report (standing check, like the context-block tally) + point the ongoing nightly scan at `/mnt/noe` (with `/ICFO` normalization + Notebook special-case). `scripts/coverage_gap.sh` = the raw ACL-diff (`comm -12` of `/ICFO` unreadable vs `/mnt/noe` readable) that first quantified the gap.
 
 ## Ingestion CLI
 
