@@ -393,6 +393,8 @@ def main() -> None:
     parser.add_argument("--force-ext", metavar="EXT", nargs="+", help="Re-index only files with these extensions (e.g. --force-ext .pdf .docx)")
     parser.add_argument("--file-list", metavar="FILE", default=None, help="Text file of absolute paths to re-index (one per line). Implies --force.")
     parser.add_argument("--dry-run", action="store_true", help="Print without writing")
+    parser.add_argument("--no-list-force", action="store_true",
+                        help="With --file-list, keep hash-dedup (skip already-indexed) instead of force-reindexing")
     args = parser.parse_args()
 
     file_list = None
@@ -424,7 +426,8 @@ def main() -> None:
         repo_name = args.repo_name or repo_path.name
 
     force_extensions = {e if e.startswith(".") else f".{e}" for e in args.force_ext} if args.force_ext else None
-    ingest_directory(args.team, repo_path, repo_name, args.force, args.dry_run, force_extensions, file_list)
+    ingest_directory(args.team, repo_path, repo_name, args.force, args.dry_run,
+                     force_extensions, file_list, list_force=not args.no_list_force)
 
 
 def _file_accessible(path: Path) -> bool:

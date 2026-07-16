@@ -26,8 +26,14 @@ export EXCLUDE_EXTENSIONS="${EXCLUDE_EXTENSIONS:-.txt}"   # skip raw-measurement
 # (user decision 2026-07-16). The /ICFO nightly still indexes Notebook's open part.
 export EXCLUDE_FOLDERS="${EXCLUDE_FOLDERS:-Notebook}"
 
-WORKERS="${1:-12}"
-shift || true
+# --- memory-safety (a persistent worker ballooned to 31GB on Docling -> OOM) ---
+export DOCLING_MAX_FILE_BYTES="${DOCLING_MAX_FILE_BYTES:-26214400}"  # 25MB — skip explosion-prone huge PDF/PPTX
+export WORKERS="${WORKERS:-4}"        # max concurrent batch subprocesses (semaphore)
+export BATCH_SIZE="${BATCH_SIZE:-40}" # files per subprocess — exits+frees Docling memory every 40 files
+export MIN_FREE_GB="${MIN_FREE_GB:-50}"  # do not launch a new batch below this free RAM (big headroom)
+
+# optional positional arg overrides the WORKERS env
+if [ -n "${1:-}" ]; then WORKERS="$1"; shift || true; fi
 
 exec /opt/qnoe-agent/venv/bin/python -m agent.ingest.parallel_server_ingest \
     --workers "$WORKERS" "$@"
