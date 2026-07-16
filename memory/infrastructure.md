@@ -29,6 +29,8 @@ ssh -i "/c/Users/yzamir/.ssh/id_ed25519_dgx" -o StrictHostKeyChecking=no yzamir@
 
 **NOPASSWD sudo** for: `cp`, `chown`, `chmod`, `mkdir`, `systemctl`, `cat`. Other sudo commands need user to run manually.
 
+**DGX user accounts:** `yzamir` (admin, NOPASSWD set above) · `qnoe-ai` (uid 1001, runs the agent stack) · `frank` (uid 1002, added 2026-07-16 for Frank Koppens: SSH-key-only login via `--disabled-password`, no sudo, no lab groups — widen deliberately if he needs the CIFS mounts).
+
 ## CIFS Mount (Lab Data Server)
 
 ```bash
