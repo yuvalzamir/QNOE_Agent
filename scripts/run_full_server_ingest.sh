@@ -33,7 +33,10 @@ export DOCLING_MAX_FILE_BYTES="${DOCLING_MAX_FILE_BYTES:-26214400}"  # 25MB — 
 # slow Docling layout pass. Only genuinely-scanned (no-text) PDFs go to Docling+OCR.
 export PDF_TEXTLAYER_FAST="${PDF_TEXTLAYER_FAST:-1}"
 export DOCLING_OCR="${DOCLING_OCR:-1}"   # OCR the scanned (no-text-layer) minority
-export WORKERS="${WORKERS:-4}"        # max concurrent batch subprocesses (semaphore)
+# Skip files already in the manifest WITHOUT re-reading them over CIFS (bulk
+# backfill of static docs; makes resume instant). Nightly leaves this off.
+export INGEST_SKIP_IF_INDEXED="${INGEST_SKIP_IF_INDEXED:-1}"
+export WORKERS="${WORKERS:-8}"        # max concurrent batch subprocesses (semaphore)
 export BATCH_SIZE="${BATCH_SIZE:-40}" # files per subprocess — exits+frees Docling memory every 40 files
 export MIN_FREE_GB="${MIN_FREE_GB:-50}"  # do not launch a new batch below this free RAM (big headroom)
 

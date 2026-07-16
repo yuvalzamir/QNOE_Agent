@@ -281,7 +281,18 @@ def ingest_directory(
     new_files = 0
     updated_files = 0
 
+    # Bulk-backfill fast path: skip files already in the manifest WITHOUT reading
+    # them (avoids a full CIFS read just to hash-and-skip). Safe for a one-time
+    # backfill of static archived docs, and makes every resume near-instant. The
+    # nightly leaves this OFF so it still hash-detects changed files.
+    skip_if_indexed = os.environ.get("INGEST_SKIP_IF_INDEXED", "").strip() == "1"
+
     for path in files:
+        if skip_if_indexed and conn.execute(
+            "SELECT 1 FROM index_manifest WHERE file_path = ?", (_store_key(path),)
+        ).fetchone():
+            skipped += 1
+            continue
         try:
             sha256 = _file_hash(path)
         except Exception as exc:
