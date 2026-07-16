@@ -49,11 +49,34 @@ OVERSIZED_FILES_LOG = Path(os.environ.get("OVERSIZED_FILES_LOG", "/tmp/oversized
 DOCLING_MAX_FILE_BYTES = int(os.environ.get("DOCLING_MAX_FILE_BYTES", str(50 * 1024 * 1024)))  # 50 MB
 DOCLING_EXTENSIONS = {".pdf", ".docx", ".pptx"}
 
+# Path normalization: READ files from INGEST_READ_ROOT but STORE their paths
+# rewritten to INGEST_STORE_ROOT (both env, no-op when unset). Used for the full
+# server ingest, which reads via the broad-access /mnt/noe mount but stores
+# canonical /ICFO/groups/NOE paths — so files already indexed via /ICFO dedupe by
+# hash (NO duplicate points), and find_file returns canonical paths. See
+# FULL_SERVER_INGEST_PLAN.md.
+_INGEST_READ_ROOT = os.environ.get("INGEST_READ_ROOT", "").rstrip("/")
+_INGEST_STORE_ROOT = os.environ.get("INGEST_STORE_ROOT", "").rstrip("/")
+
+
+def _store_key(path) -> str:
+    """Manifest/payload identity for *path*: the read path with INGEST_READ_ROOT
+    swapped for INGEST_STORE_ROOT (canonical). Identity == str(path) when unset."""
+    s = str(path)
+    if _INGEST_READ_ROOT and _INGEST_STORE_ROOT and s.startswith(_INGEST_READ_ROOT + "/"):
+        return _INGEST_STORE_ROOT + s[len(_INGEST_READ_ROOT):]
+    return s
+
 
 # ── Manifest (hash-based deduplication) ───────────────────────────────────────
 
 def _get_manifest_conn(manifest_db: str = MANIFEST_DB) -> sqlite3.Connection:
-    conn = sqlite3.connect(manifest_db)
+    conn = sqlite3.connect(manifest_db, timeout=120)
+    # Parallel workers share this manifest. busy_timeout makes concurrent writers
+    # WAIT for the lock instead of erroring with "database is locked". We do NOT
+    # switch to WAL: this db is read read-only by the sandboxed gateway (find_file)
+    # as a different UID, and cross-UID WAL side-files break those readers (M52).
+    conn.execute("PRAGMA busy_timeout=120000")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS index_manifest (
             id           INTEGER PRIMARY KEY,
@@ -74,7 +97,7 @@ def _file_hash(path: Path) -> str:
 
 def _is_unchanged(conn: sqlite3.Connection, path: Path, sha256: str) -> bool:
     row = conn.execute(
-        "SELECT sha256 FROM index_manifest WHERE file_path = ?", (str(path),)
+        "SELECT sha256 FROM index_manifest WHERE file_path = ?", (_store_key(path),)
     ).fetchone()
     return row is not None and row[0] == sha256
 
@@ -93,7 +116,7 @@ def _record_file(
         """INSERT OR REPLACE INTO index_manifest
            (file_path, sha256, collection, point_ids, indexed_at)
            VALUES (?, ?, ?, ?, ?)""",
-        (str(path), sha256, collection, json.dumps(point_ids), now),
+        (_store_key(path), sha256, collection, json.dumps(point_ids), now),
     )
     conn.commit()
 
@@ -139,7 +162,7 @@ def _delete_old_chunks(
     """
     import json
     row = conn.execute(
-        "SELECT collection, point_ids FROM index_manifest WHERE file_path = ?", (str(path),)
+        "SELECT collection, point_ids FROM index_manifest WHERE file_path = ?", (_store_key(path),)
     ).fetchone()
     if not row:
         return
@@ -216,19 +239,13 @@ def _find_files(root: Path) -> list[Path]:
         "(", *name_exprs, ")",
         "-print",
     ]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        paths = [Path(p) for p in result.stdout.splitlines() if p.strip()]
-        # Case-insensitive extension filter (find -name is case-sensitive on Linux)
-        return [p for p in paths if p.suffix.lower() in exts]
-    except subprocess.TimeoutExpired:
-        logger.warning("find timed out on %s — falling back to rglob", root)
-        return [
-            p for p in root.rglob("*")
-            if p.is_file() and p.suffix.lower() in exts
-            and ".git" not in p.parts
-            and not p.name.startswith("~$")
-        ]
+    # NO timeout on find (M7): a full CIFS traversal legitimately takes hours;
+    # a timeout silently truncated results (missing DBs/files). Let it run to
+    # completion. The parallel runner caches the result so re-runs skip the find.
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    paths = [Path(p) for p in result.stdout.splitlines() if p.strip()]
+    # Case-insensitive extension filter (find -name is case-sensitive on Linux)
+    return [p for p in paths if p.suffix.lower() in exts]
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -242,6 +259,7 @@ def ingest_directory(
     force_extensions: set[str] | None = None,
     file_list: list[Path] | None = None,
     manifest_db: str | None = None,
+    list_force: bool = True,
 ) -> None:
     client = QdrantClient(url=QDRANT_URL)
     _ensure_collection(client, team)
@@ -250,7 +268,10 @@ def ingest_directory(
     if file_list is not None:
         files = sorted(file_list)
         logger.info("Processing %d files from --file-list", len(files))
-        force = True  # always re-index when given explicit list
+        if list_force:
+            force = True  # CLI --file-list: always re-index the explicit list
+        # else (parallel resumable run): keep hash-dedup so a re-run skips
+        # already-indexed files instead of re-embedding everything.
     else:
         files = sorted(_find_files(repo_path))
         logger.info("Found %d indexable files in %s", len(files), repo_path)
@@ -316,7 +337,7 @@ def ingest_directory(
 
         # Track whether this is a new file or an update
         is_new = conn.execute(
-            "SELECT 1 FROM index_manifest WHERE file_path = ?", (str(path),)
+            "SELECT 1 FROM index_manifest WHERE file_path = ?", (_store_key(path),)
         ).fetchone() is None
         if is_new:
             new_files += 1
@@ -329,6 +350,13 @@ def ingest_directory(
         chunks = chunk_file(path, repo_name)
         if not chunks:
             continue
+
+        # Store the canonical (normalized) path in the Qdrant payload, not the
+        # /mnt/noe read path — keeps the corpus + find_file on /ICFO paths.
+        sk = _store_key(path)
+        if sk != str(path):
+            for c in chunks:
+                c["source"] = sk
 
         if len(chunks) == 1:
             try:

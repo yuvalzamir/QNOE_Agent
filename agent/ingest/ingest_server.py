@@ -24,10 +24,17 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
 SERVER_ROOT = Path(os.environ.get("SERVER_ROOT", "/ICFO/groups/NOE"))
 
-# Folders to ingest — all go to group-wide
+# Folders to ingest — all go to group-wide. This is an ALLOWLIST: anything not
+# listed is skipped. Expanded 2026-07-16 for the full /mnt/noe scan.
+# DELIBERATELY EXCLUDED (do NOT add): Fabrication, Personal (privacy — user
+# decision 2026-07-16); Data Backup (large archive, low RAG value); ai_agent,
+# Pictures, Rendering Files, National Instruments Downloads, .obsidian, Obsidian,
+# .TemporaryItems (junk / not documents). Per-file junk (venv, __pycache__,
+# .ipynb_checkpoints, "Personal/Sergi/QTM - Copy") is pruned by watcher.yaml.
 SERVER_FOLDERS = [
     "Lab_Instruments",
     "Manuscripts",
+    "Matlab scripts",   # added 2026-07-16
     "Meetings",
     "Notebook",
     "Notebooks",
@@ -36,7 +43,14 @@ SERVER_FOLDERS = [
     "Presentation",
     "Presentations",
     "Projects",
+    "Python scripts",   # added 2026-07-16
+    "QCoDeS",           # added 2026-07-16
+    "QTLab",            # added 2026-07-16
+    "Samples",          # added 2026-07-16
+    "Scripts",          # added 2026-07-16
+    "Setups",           # added 2026-07-16
     "Spectromag",
+    "Teaching",         # added 2026-07-16
     "Theses & reports",
 ]
 
