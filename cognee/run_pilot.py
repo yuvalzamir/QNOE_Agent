@@ -30,6 +30,12 @@ LLM_ENDPOINT = os.environ.get("LLM_ENDPOINT", "http://localhost:8000/v1")
 LLM_MODEL = os.environ.get("LLM_MODEL", "openai/gpt-oss-120b")
 VECTOR_PROVIDER = os.environ.get("VECTOR_DB_PROVIDER", "lancedb")
 EFFORT = os.environ.get("REASONING_EFFORT", "high")
+# Our ontology graph-extraction prompt (overrides cognee's generic default —
+# cognify does NOT thread custom_prompt, so graph_prompt_path is the real lever)
+GRAPH_PROMPT = os.environ.get(
+    "GRAPH_PROMPT_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "qnoe_graph_prompt.txt"),
+)
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger("run_pilot")
@@ -66,6 +72,11 @@ def configure():
         cognee.config.set_llm_config({"reasoning_effort": EFFORT, "max_tokens": 8192})
     except Exception as e:
         logger.warning("set_llm_config(reasoning_effort) not accepted: %s", e)
+    # point graph extraction at OUR ontology prompt (mutate the config singleton
+    # directly — there is no set_graph_prompt_path helper)
+    from cognee.infrastructure.llm.config import get_llm_config
+    get_llm_config().graph_prompt_path = GRAPH_PROMPT
+    logger.info("graph_prompt_path -> %s", GRAPH_PROMPT)
 
 
 async def export_graph(out_prefix: str):
@@ -101,7 +112,6 @@ async def export_graph(out_prefix: str):
 async def run(args):
     import cognee
     from cognee.shared.data_models import KnowledgeGraph
-    from ontology import CUSTOM_PROMPT
     if args.prune:
         await cognee.prune.prune_data()
         await cognee.prune.prune_system(metadata=True)
@@ -114,9 +124,8 @@ async def run(args):
     logger.info("adding %d docs (dataset=%s)", len(docs), args.dataset)
     for d in docs:
         await cognee.add(d["text"], dataset_name=args.dataset)
-    logger.info("cognify (graph_model=QKnowledgeGraph, effort=%s) …", EFFORT)
-    await cognee.cognify(datasets=[args.dataset], graph_model=KnowledgeGraph,
-                         custom_prompt=CUSTOM_PROMPT)
+    logger.info("cognify (graph_model=KnowledgeGraph, our graph_prompt, effort=%s) …", EFFORT)
+    await cognee.cognify(datasets=[args.dataset], graph_model=KnowledgeGraph)
     await export_graph(args.out)
 
 
