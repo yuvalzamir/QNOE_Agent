@@ -57,7 +57,8 @@ logger = logging.getLogger("sp_coverage_audit")
 # sharepoint_sync — that module pulls in the chunk/embed stack, which is
 # heavy and competes for RAM with a running ingest.
 SUPPORTED_EXTENSIONS = {".py", ".ipynb", ".md", ".rst", ".pdf", ".pptx", ".docx"}
-EXCLUDE_PATH_SUBSTRINGS = {".env/", "/venv/", "site-packages/", "node_modules/", "__pycache__/"}
+EXCLUDE_PATH_SUBSTRINGS = {".env/", "/venv/", "site-packages/", "node_modules/",
+                           "__pycache__/", ".ipynb_checkpoints/"}
 
 SP_CONFIG_PATH = os.environ.get("SHAREPOINT_CONFIG", "/opt/qnoe-agent/config/sharepoint.yaml")
 SP_MANIFEST_DB = os.environ.get("SP_MANIFEST_DB", "/opt/qnoe-agent/memory/sharepoint.db")
@@ -134,17 +135,26 @@ def iter_drive_files(drive_id: str, tok: _Token):
         url = data.get("@odata.nextLink")
 
 
-def present_paths_for_drive(drive_id: str, site_cfg: dict, tok: _Token) -> set[str]:
-    """All rel-paths in the drive that pass the sync's ingest filters."""
+def present_paths_for_drive(drive_id: str, site_cfg: dict, tok: _Token,
+                            dump_fh=None, site_name: str = "") -> set[str]:
+    """All rel-paths in the drive that pass the sync's ingest filters.
+
+    When dump_fh is given, EVERY live file item (pre-filter) is appended to it
+    as {"site", "id", "path"} JSONL — the live-item inventory consumed by
+    scripts/sp_orphan_sweep.py, so the sweep needs no second 45-min listing.
+    """
     max_bytes = site_cfg.get("max_file_mb", 50) * 1024 * 1024
     excludes = [e.lstrip("/") for e in site_cfg.get("exclude_folders", [])]
     present: set[str] = set()
     for item in iter_drive_files(drive_id, tok):
+        rel = _item_path(item)
+        if dump_fh is not None:
+            dump_fh.write(json.dumps(
+                {"site": site_name, "id": item.get("id", ""), "path": rel}) + "\n")
         if Path(item.get("name", "")).suffix.lower() not in SUPPORTED_EXTENSIONS:
             continue
         if item.get("size", 0) > max_bytes:
             continue
-        rel = _item_path(item)
         if any(rel.startswith(e) for e in excludes):
             continue
         if any(p in rel for p in EXCLUDE_PATH_SUBSTRINGS):
@@ -217,7 +227,7 @@ def _top_folder(rel: str) -> str:
 
 
 def audit(cfg: dict, tok: _Token, min_cov: float, only_site: str | None,
-          skip_tenant_scan: bool) -> dict:
+          skip_tenant_scan: bool, dump_live: str | None = None) -> dict:
     indexed_all = indexed_paths_by_site()
     result: dict = {"sites": [], "tenant": None, "denied": [],
                     "min_coverage": min_cov}
@@ -226,6 +236,17 @@ def audit(cfg: dict, tok: _Token, min_cov: float, only_site: str | None,
     if only_site:
         site_cfgs = [s for s in site_cfgs if s["name"] == only_site]
 
+    # The dump is written alternately by the qnoe-ai on-demand unit and the
+    # yzamir nightly task; a leftover file owned by the other uid blocks a
+    # plain "w" open. Both uids have write on logs/, so unlink-then-create.
+    dump_fh = None
+    if dump_live:
+        try:
+            os.unlink(dump_live)
+        except FileNotFoundError:
+            pass
+        dump_fh = open(dump_live, "w")
+        os.chmod(dump_live, 0o664)
     configured_site_ids: set[str] = set()
 
     for site_cfg in site_cfgs:
@@ -254,7 +275,8 @@ def audit(cfg: dict, tok: _Token, min_cov: float, only_site: str | None,
                 continue
             logger.info("enumerating %s / %s …", name, d["name"])
             try:
-                paths = present_paths_for_drive(d["id"], site_cfg, tok)
+                paths = present_paths_for_drive(d["id"], site_cfg, tok,
+                                                dump_fh=dump_fh, site_name=name)
             except requests.HTTPError as exc:
                 code = exc.response.status_code if exc.response is not None else "?"
                 result["denied"].append({"site": name, "stage": f"drive:{d['name']}", "status": code})
@@ -316,6 +338,9 @@ def audit(cfg: dict, tok: _Token, min_cov: float, only_site: str | None,
             result["denied"].append({"site": "<tenant scan>", "stage": "sites?search=*", "status": code})
             logger.warning("tenant site discovery denied/failed (%s)", code)
 
+    if dump_fh is not None:
+        dump_fh.close()
+        logger.info("live-item dump written: %s", dump_live)
     return result
 
 
@@ -388,6 +413,9 @@ def main(argv) -> int:
                     default=float(os.environ.get("MIN_COVERAGE", "0.8")))
     ap.add_argument("--skip-tenant-scan", action="store_true",
                     help="skip the tenant-wide /sites?search=* discovery")
+    ap.add_argument("--dump-live", default=None, metavar="FILE",
+                    help="also write every live file item (site,id,path) as JSONL "
+                         "— consumed by scripts/sp_orphan_sweep.py")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--line", action="store_true")
     args = ap.parse_args(argv)
@@ -397,7 +425,8 @@ def main(argv) -> int:
     tok = _Token(cfg["auth"])
     logger.info("authentication OK")
 
-    res = audit(cfg, tok, args.min_coverage, args.site, args.skip_tenant_scan)
+    res = audit(cfg, tok, args.min_coverage, args.site, args.skip_tenant_scan,
+                dump_live=args.dump_live)
     if args.json:
         print(json.dumps({**res, "summary": summary_line(res)}))
     elif args.line:

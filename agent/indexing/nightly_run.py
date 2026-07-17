@@ -59,6 +59,7 @@ TASK_TIMEOUTS = {
     "task_process_change_queue":  1 * 3600,  #  1 h
     "task_orphan_cleanup":        10 * 60,   # 10 min
     "task_context_blocks":        5 * 60,    #  5 min (pure file reads)
+    "task_sp_coverage":           90 * 60,   # 90 min (full Graph listing ~45 min)
 }
 _DEFAULT_TASK_TIMEOUT = 3600  # 1 h for any unlisted task
 
@@ -525,6 +526,63 @@ def task_context_blocks() -> dict:
     return stats
 
 
+def task_sp_coverage() -> dict:
+    """SharePoint present-vs-indexed coverage audit (standing check, M58 lineage).
+
+    Runs scripts/sharepoint_coverage_audit.py in a subprocess: a read-only
+    Graph listing (~45 min for noe-group) that reconciles what's live on
+    SharePoint against sp_manifest, per top-level folder. Surfaces coverage
+    gaps, credential-denied libraries, unconfigured tenant sites and
+    manifest/Qdrant divergence — the silent-gap class that left ~11.7K files
+    unindexed until 2026-07-16. Also refreshes logs/sp_live_items.jsonl, the
+    live-item inventory consumed by scripts/sp_orphan_sweep.py.
+
+    Audit exit code 1 means "findings" (gaps reported as warnings, task OK);
+    a crash or unparseable output raises → task FAILURE, never silent.
+    Set SP_AUDIT_EXTRA_ARGS (e.g. "--site twisted-materials") to narrow a run.
+    """
+    import subprocess
+
+    sp_env_file = Path("/opt/qnoe-agent/secrets/sharepoint.env")
+    if sp_env_file.exists():
+        for line in sp_env_file.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, _, v = line.partition("=")
+                os.environ.setdefault(k.strip(), v.strip())
+
+    cmd = [sys.executable, "/opt/qnoe-agent/scripts/sharepoint_coverage_audit.py",
+           "--json", "--dump-live", str(LOGS_DIR / "sp_live_items.jsonl")]
+    cmd += os.environ.get("SP_AUDIT_EXTRA_ARGS", "").split()
+    proc = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=85 * 60,
+        env={**os.environ, "PYTHONPATH": "/opt/qnoe-agent"},
+    )
+    if not proc.stdout.strip():
+        raise RuntimeError(
+            f"coverage audit produced no output (rc={proc.returncode}): "
+            f"{proc.stderr[-500:]}")
+    res = json.loads(proc.stdout)
+
+    summary = res.get("summary", "?")
+    gapped = [f for s in res.get("sites", []) for f in s.get("folders", [])
+              if f.get("gap")]
+    if gapped or res.get("denied"):
+        logger.warning("SP coverage: %s", summary)
+    else:
+        logger.info("SP coverage: %s", summary)
+    return {
+        "summary": summary,
+        "gapped_folders": len(gapped),
+        "denied": len(res.get("denied", [])),
+        "tenant_unconfigured": len((res.get("tenant") or {}).get("unconfigured_sites", [])),
+        "sites": {s["site"]: {"present": s.get("present_total"),
+                              "indexed": s.get("indexed_total"),
+                              "orphans": s.get("orphans")}
+                  for s in res.get("sites", [])},
+    }
+
+
 TASKS: list = [
     task_qdrant_snapshot,
     task_index_repos,
@@ -532,6 +590,7 @@ TASKS: list = [
     task_process_change_queue,
     task_orphan_cleanup,
     task_context_blocks,
+    task_sp_coverage,
 ]
 
 

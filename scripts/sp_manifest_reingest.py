@@ -63,7 +63,8 @@ FAILED_LIST = f"{QNOE_ROOT}/logs/sp_reingest_failed.txt"
 
 # Mirror sharepoint_sync's filters (present = "the sync should index it")
 SUPPORTED_EXTENSIONS = {".py", ".ipynb", ".md", ".rst", ".pdf", ".pptx", ".docx"}
-EXCLUDE_PATH_SUBSTRINGS = {".env/", "/venv/", "site-packages/", "node_modules/", "__pycache__/"}
+EXCLUDE_PATH_SUBSTRINGS = {".env/", "/venv/", "site-packages/", "node_modules/",
+                           "__pycache__/", ".ipynb_checkpoints/"}
 
 _NUMPLOT = re.compile(r"^\d+(_\d+)?\.pdf$")
 
