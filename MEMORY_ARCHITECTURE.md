@@ -106,14 +106,30 @@ This preserves "user owns the framing" while blocking self-poisoning. Note it **
 
 ---
 
-## Part 5 — Open decisions (need the user)
+## Part 5 — Decisions (resolved 2026-07-17)
 
-1. **Ownership predicate** — is "own work" = performed-the-measurement, owns-the-sample, named-project-member, or a union? Where do supervision / co-authorship land?
-2. **Self-poisoning strictness** — hard rule (Cognee always wins verifiable values, Mem0 never stores them) vs soft (store with `source:user-claim`, flag on divergence)? Contradiction #2 recommends the hard rule for *values*, soft for *opinions*.
-3. **"We/our" default** — resolve to the user's subteam (first-party) or ask when ambiguous?
-4. **Mem0 TTL** — do own-work "focus" facts expire on a timer, on corpus reconciliation, or only on explicit change?
-5. **SOUL guard change** — approve the scoped relaxation ("memory MAY hold first-party intent/opinion; still never a source for verifiable records") before it ships, since it edits deployed policy.
+1. **Ownership predicate = union.** First-party if the user satisfies **any one** of: performed the measurement, owns the sample/device, or is a named project member. Mere awareness or supervision alone does **not** qualify unless it also meets one of these (e.g. a supervisor who is a named project member counts).
+2. **Soft rule + in-conversation contradiction alert.** Store the user's own-work claim with `source: user-claim` + provenance; on divergence from the authoritative record, the record (Cognee/registry) wins **and the agent tells the user in the same turn** ("you said X, but the record shows Y") — the contradiction is surfaced, not silently overridden.
+3. **Ask when "we/our" is ambiguous** (don't silently assume subteam).
+4. **Mem0 TTL = timer AND factual change.** Own-work "focus" facts expire on a timer *or* when a superseding fact arrives, whichever first.
+5. **SOUL guard relaxation only after Cognee ships.** Until then the deployed "memory is not a source for verifiable lab records" guard stays as-is.
 
 ---
 
-*Next step per project workflow: this is a design doc, not an execute-now task. If approved in direction, add a TODO execute-task to prototype Phase A (Cognee + Kùzu + Qdrant reuse, small-slice cognify) — do not auto-build.*
+## Part 6 — Interim: de-risk Mem0 NOW, before Cognee
+
+**The binding constraint (from decision #5 + contradiction #2):** Cognee is the oracle that makes own-work facts safe — it's the authoritative store the soft rule defers to, and its existence is the precondition for relaxing the SOUL guard. **Until Cognee ships there is no fallback source of truth**, so we must **NOT** start storing own-work *verifiable* facts in Mem0 yet — that would be self-poisoning with nothing to catch it. Interim, Mem0 stays scoped to **personal preferences + interest pointers** (today's SOUL scope) — but *enforced at write time* instead of hoped-for via prompt.
+
+**Do now — durable, survives into Cognee (this IS the Mem0 half of the final design, not throwaway):**
+
+1. **Provenance metadata on every `add()`** — `source` (user-stated vs assistant-distilled), timestamp, verbatim source message. Required by the soft rule (#2) regardless; ends the nuclear-wipe failure mode immediately (purge becomes a `qdrant delete` by filter); a metadata dict on the existing call, near-zero cost. *(= MEM0_HYGIENE_OPTIONS Option 3.)*
+2. **Deterministic first-party / third-party write gate in `sync_turn`** — before `add()`, drop third-party turns (queries/"what do we have"/run-id lookups/colleague-named talk) and lab-fact-looking content; keep only personal prefs + interest pointers. Kills the M55 query-log class at the source. Reuse the existing run-id / find_file intent regexes. *(= Option 2, deterministic tier, now with the first-party definition from Part 2.)*
+3. **Grounding validator stays the output oracle** (already shipped) — its misattribution/mistyped footer already *is* the interim "contradiction alert" (registry as oracle). Optionally add a light nightly audit that reuses the validator's registry helpers (`_run_in_db`, etc.) to flag any Mem0 fact that looks like a lab-record or query-log.
+
+**Defer to Cognee:** storing own-work verifiable facts in Mem0; the SOUL-guard relaxation; the full oracle-audit (registry → KG); temporal/graph reasoning. The in-conversation contradiction alert graduates from "registry footer" to "KG-backed, per decision #2" once Cognee is the oracle.
+
+**Why this isn't wasted work:** Mem0 survives the Cognee migration as the *personalization layer*. Provenance tags + the first-party write gate are exactly its final-state properties — we're building the Mem0 half of the target architecture now, and letting Cognee fill in the corpus half later.
+
+---
+
+*Next step per project workflow: the interim (Part 6, items 1–2) is small and Cognee-independent — a candidate execute-task on its own. The Cognee migration (Part 1 Phase A) stays a design doc until direction is approved; then add a TODO execute-task — do not auto-build.*
