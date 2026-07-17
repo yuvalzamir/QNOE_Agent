@@ -1639,8 +1639,25 @@ broad `/mnt/noe` mount, storing `/ICFO` paths. Full design + operational lessons
   CPU + thread oversubscription (loadavg 443/20 cores — more workers would *slow* it; thread-cap is
   the real lever); DGX-side `sprint_watchdog.sh` + `sprint_status_logger.sh` self-healing (session
   timers kept getting harness-killed); accidental vLLM start mid-run caused no damage.
-- **Wind-down (in progress):** straggler sweep (running) → final coverage_audit → `systemctl start
-  vllm.service` → restore crontab (`#SPRINT-SKIP` lines, backup `crontab.bak-sprint-20260716`) →
-  fix CavityQED stored paths /mnt/noe→/ICFO via `--refresh-find`.
-- **Standing TODO:** wire `coverage_audit.py` into the nightly report; point the nightly scan at
-  `/mnt/noe` (normalization + Notebook special-case) so this silent-gap class can't recur.
+- **Straggler sweep DONE (2026-07-18 00:38):** re-ran (cache reused, skip-if-indexed) after the SP
+  agent signalled "final done"; recovered **~441 more files**, finished `1215/1215, 3 failed`
+  (2 self-handled OOMs + 1 batch I killed — see below). `Presentations` stayed 26/33 (79%): its
+  7-file residual is **oversized (>25 MB) / unsupported PDFs** that genuinely can't be chunked
+  (confirmed — the sweep re-processed them and they skip), NOT a coverage miss.
+- **Wind-down COMPLETE — agent BACK ONLINE (2026-07-18 00:38):** automated via detached
+  `/home/yzamir/winddown.sh` (waits for ingest to fully drain → final coverage_audit → `sudo
+  systemctl start vllm.service` → `crontab -l | sed 's/^#SPRINT-SKIP //' | crontab -`). Verified:
+  **vllm.service active** (gpt-oss-120b serving :8000), **qnoe-hermes-sandbox active**, watcher
+  active, Qdrant up, crontab restored (0 SPRINT-SKIP), ~48 GB free while serving.
+- **Two finish-line gotchas (→ mistakes):** (1) a single **pathological Docling file hung one worker
+  ~20 min** (state `Rl`, 16 GB RSS, zero log output — CPU-grinding a complex/scanned PDF's layout,
+  not I/O-hung) and blocked run completion → `kill <batch pid>` finishes the run cleanly (batch is
+  resumable). (2) After a long vLLM-off window the **Hermes gateway was left `inactive`** — restarting
+  vLLM alone does NOT bring the agent back; must also `sudo systemctl start qnoe-hermes-sandbox.service`
+  (and only after the LLM endpoint actually serves, ~40 s mmap warm-up, else the gateway starts against a dead LLM).
+- **Standing TODO / residuals:** wire `coverage_audit.py` into the nightly report; point the nightly
+  scan at `/mnt/noe` (normalization + Notebook special-case); fix CavityQED stored paths
+  /mnt/noe→/ICFO via `--refresh-find`; optional mop-up of the 3 failed sweep batches (~120 files)
+  + the 7 oversized Presentations files (raise `DOCLING_MAX_FILE_BYTES` for a targeted pass if wanted).
+  DGX helper scripts (`sprint_watchdog.sh`, `sprint_status_logger.sh`, `winddown.sh`, `*_sweep.log`,
+  `sprint_status.log`) left in place at user request for reference.
