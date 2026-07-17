@@ -8,7 +8,15 @@
 
 ## 0. Goal & non-goals
 
-**Goal.** A **ground-truth knowledge graph of the group's corpus** — samples, runs, devices, papers, people, setups, projects, materials and the relationships between them — built from the **DATA** (QCoDeS registry, repos, papers, SharePoint), **not from conversations**. It is the authoritative store of *objective* lab facts: what exists, what connects to what, who did what, where. It complements — not replaces (at first) — the existing chunk-RAG, and it becomes the **oracle** the grounding validator and the Mem0 own-work rule defer to (see [[MEMORY_ARCHITECTURE]] decisions #2/#5).
+**Goal.** A **knowledge graph of the group's RESEARCH PROGRAM**, built from the corpus (**DATA, not conversations**). It captures two things, not one:
+- **The research** — the *concepts* and *phenomena* the group studies, the *open questions* and *research directions* it pursues, the *techniques/methods* and *setups* it uses as research tools, the *projects/efforts*, *hypotheses*, and *findings*. This is the knowledge the lab *thinks about*, not just the data it records.
+- **The factual anchor** — the samples, runs, devices, setups, people that ground the research in what was actually measured, where, by whom.
+
+It is NOT merely a catalogue of measurements. It complements — not replaces (at first) — the existing chunk-RAG, and its factual tier becomes the **oracle** the grounding validator and the Mem0 own-work rule defer to (see [[MEMORY_ARCHITECTURE]] decisions #2/#5).
+
+**Two tiers of truth (the central design point).** The graph mixes two epistemically different kinds of node, and they must not be conflated:
+- **Tier 1 — factual anchor (deterministic).** Samples/runs/setups/devices from the registry via `add_data_points`, no LLM → *actual ground truth*.
+- **Tier 2 — research/conceptual (LLM-inferred).** Concepts/questions/techniques/directions/hypotheses extracted from prose by `cognify` → *derived knowledge*, only as reliable as the extraction. This is the real value of the graph AND its real risk: a weak model can confabulate concepts/relationships, producing a "ground-truth graph" that is actually an LLM's guess — the exact failure mode this project fights (R11 / grounding validator / Mem0 poisoning). **Tier-2 nodes therefore carry provenance (source doc + extracting model) and are treated as inferred-with-source, never asserted as authoritative fact.** Cognee tracks provenance to source episodes, which supports this — but it does not remove the need for a strong extraction model + validation.
 
 **Non-goals.** Per-user personalization (that stays Mem0). Conversational memory. Replacing chunk-RAG on day one (KG runs *alongside* until it proves out).
 
@@ -36,7 +44,9 @@ Four frameworks were researched against these exact constraints. Summary:
 
 **Honest dissent (recorded).** The LightRAG research argued LightRAG is a "closer architectural fit" because Cognee is marketed as agent-memory-oriented. Fair caution — but it under-weights the two things that actually decide it here: our data is *mostly a structured registry* (so `add_data_points` matters more than extraction quality), and *reusing Qdrant + Kùzu* matters. LightRAG's ontology is soft prompt-guidance (weak for a *ground-truth* typed graph) and its extraction would sit right on the documented <50 tok/s timeout cliff. **Graphiti** is the strongest on continuous-update + MCP, but it **cannot reuse Qdrant** (Milvus-only vector overlay), Kùzu is deprecated there, and it's episode-oriented, not bulk-corpus — three strikes against our reuse-infra requirement. **GraphRAG** is disqualified by batch indexing + Parquet-not-a-DB + impractical local cost.
 
-**Verdict: Cognee.** Eyes open on the real risks (§8): local structured-output reliability for `cognify`, extraction throughput, and Cognee's fast-moving API.
+**The conceptual re-weighting (important).** `add_data_points` decides the *factual anchor* (Tier 1). But the **research/conceptual graph (Tier 2) is the heart**, and it is **LLM-extraction-bound for every framework** — so the conceptual layer does NOT differentiate Cognee from LightRAG/Graphiti on capability; the real lever there is the **extraction model + validation**, not the framework. Cognee still wins overall because it *also* nails the factual anchor + Qdrant/Kùzu reuse + a typed conceptual ontology + provenance — but choosing Cognee does not by itself buy a good conceptual graph. That must be earned in Phase 0/2 (§7, §8).
+
+**Verdict: Cognee.** Eyes open on the real risks (§8): first and foremost the **conceptual-tier extraction quality** (a weak model confabulates a research graph), then local structured-output reliability, extraction throughput, and Cognee's fast-moving API.
 
 ---
 
@@ -66,9 +76,26 @@ Four frameworks were researched against these exact constraints. Summary:
 
 ---
 
-## 3. Point 1 — Ontology: seed structure, then extract
+## 3. Point 1 — Ontology: a research-program schema, seeded then extracted
 
-Cognee supports a **prescribed ontology** (you define the schema) **plus learned** (extraction may discover entities/relations around it). Define domain node types as `DataPoint` subclasses; `metadata.index_fields` says which fields to embed for search.
+The ontology has **two tiers** (per §0). Cognee supports a **prescribed ontology** (you define the schema) **plus learned** (extraction discovers entities/relations around it) — so the factual tier is seeded deterministically and the conceptual tier is extracted and linked onto it.
+
+**Tier 2 — the research/conceptual node types (the heart; LLM-extracted, provenance-tagged):**
+- `Concept` / `Phenomenon` — e.g. *moiré flat bands*, *photothermoelectric effect*, *quantum Hall photocurrent*, *momentum-resolved tunneling*, *cavity QED*, *hyperbolic phonon-polaritons*.
+- `Question` / `OpenProblem` / `ResearchDirection` — e.g. *how twist angle tunes the tunneling momentum*, *non-local conductivity in BLG*, *what limits photocurrent responsivity*.
+- `Technique` / `Method` — e.g. *scanning photocurrent microscopy*, *momentum-resolved tunneling spectroscopy*, *nano-IR*.
+- `Project` / `Effort` — a research thrust (maps to repos like `SLG07-PhQH`, `BLG-QED`, and to funded directions).
+- `Hypothesis` / `Claim` / `Finding` — asserted or concluded statements (each with source + status).
+- `Paper` / `Publication`, `Material` (graphene, hBN, MoO₃, BSCCO — bridges tiers).
+
+**Tier 1 — the factual anchor node types (deterministic, from the registry/configs):** `Sample`, `Run`, `Setup`, `MeasurementType`, `Device`, `Person`.
+
+**Relationships that make it a *research* graph (not a catalogue):**
+`Project –studies→ Concept` · `Project –pursues→ Question` · `Project –uses→ Technique` · `Technique –runs_on→ Setup` · `Paper –addresses→ Question` · `Run –tests→ Hypothesis` · `Run –probes→ Phenomenon` · `Concept –motivates→ Question` · `Project –builds_on→ Project/Paper` · `Person –works_on→ Project` · `Finding –supports/refutes→ Hypothesis` · plus the factual edges `Run –measured_on→ Sample`, `Run –on_setup→ Setup`, `Run –is_type→ MeasurementType`, `Person –owns→ Sample`.
+
+This is what lets the graph answer *research* questions — "what techniques does the group use to study moiré flat bands", "which open questions is the photocurrent team pursuing and what have they found", "what setups enable momentum-resolved spectroscopy" — not just "list runs on sample X".
+
+Define node types as `DataPoint` subclasses; `metadata.index_fields` says which fields to embed for search.
 
 ```python
 from cognee.infrastructure.engine import DataPoint
@@ -181,9 +208,9 @@ VECTOR_DB_KEY=""
 
 ## 7. Phased development & deployment (KG-first, retrieval-later, additive)
 
-- **Phase 0 — Standup & offline smoke (small).** Separate venv, pinned Cognee, local LLM+embeddings+Kùzu+Qdrant wired; `add()`→`cognify()`→`search()` on one doc. **Gate the whole plan on two verifications:** (a) fully-offline round-trip works; (b) **`cognify` structured-output reliability on gpt-oss-120b** is acceptable (this is the #1 risk — if bad, pick a dedicated extraction model). Also confirm the `cognify(graph_model=…)` signature.
-- **Phase 1 — Structured backbone (high value, LLM-free).** Define the ontology; load the **entire QCoDeS registry via `add_data_points`** → the ground-truth `Sample/Run/Setup/MeasurementType/Person` skeleton. Validate graph counts + edges against the registry (reuse the grounding validator's checks). **This phase alone** delivers a correct entity graph and can already back the grounding oracle — with **no extraction cost**.
-- **Phase 2 — Unstructured enrichment (measure cost).** `cognify` a small slice (one subteam's repo docs + a few papers) with the ontology; verify entities link to the backbone; **measure extraction quality + latency on gpt-oss**; decide on a dedicated extraction model. Gate list-heavy/code files.
+- **Phase 0 — Standup & the CONCEPTUAL-QUALITY gate (small but decisive).** Separate venv, pinned Cognee, local LLM+embeddings+Kùzu+Qdrant wired; `add()`→`cognify()`→`search()`. **Gate the whole plan on:** (a) fully-offline round-trip works; (b) **conceptual extraction quality** — run `cognify` on a handful of *real* group papers/proposals with the research ontology and have a human judge whether the extracted concepts/questions/techniques/relationships are *sensible and non-confabulated*, not just whether the JSON parsed. **This is the real go/no-go** — if gpt-oss-120b produces a noisy/hallucinated conceptual graph, either commit to a dedicated stronger extraction model or rethink the conceptual tier. Confirm the `cognify(graph_model=…)` signature.
+- **Phase 1 — Factual anchor / scaffold (deterministic, LLM-free).** Define the ontology; load the **QCoDeS registry via `add_data_points`** → the `Sample/Run/Setup/MeasurementType/Person` skeleton the concepts attach to. Validate counts+edges against the registry (reuse the grounding validator's checks). This is the safe *scaffold* and can already back the factual grounding oracle — but it is NOT the point of the graph; the research knowledge is.
+- **Phase 2 — The research/conceptual graph (the heart).** `cognify` the corpus (papers, proposals, repo prose, notebooks, SharePoint) with the research ontology; extract Concept/Question/Technique/Direction/Hypothesis/Finding and **link them to the Phase-1 anchor** (Project studies Concept, Run tests Hypothesis, Technique runs_on Setup). Every Tier-2 node carries provenance. Validate the conceptual graph (human spot-check) before it backs answers; measure latency/cost; use the dedicated extraction model if Phase-0 required it; gate list-heavy/code files. **This is where the graph earns its keep.**
 - **Phase 3 — Continuous update.** Wire incremental `cognify` + `add_data_points` into the nightly/watcher (reuse ingest output); memory-gated, resumable, off-peak; coverage audit. Then run the **full-corpus** enrichment as a one-time heavy job (like the existing re-ingest).
 - **Phase 4 — Chat integration + oracle graduation.** `kg_search` prefetch hook + tool; routing; shadow/A-B on multi-hop vs RAG. Then make the KG the grounding oracle → **unlock Mem0 own-work facts + the SOUL-guard relaxation** ([[MEMORY_ARCHITECTURE]]).
 - **Rollback:** every phase is additive — the KG never replaces chunk-RAG until Phase 4 proves it; disable the hook/tool to fall back instantly.
@@ -192,7 +219,8 @@ VECTOR_DB_KEY=""
 
 ## 8. Risks & mitigations
 
-- **gpt-oss structured-output reliability for `cognify`** (the top risk — weak local models emit bad JSON). → instructor/BAML; validate in Phase 0/2; **dedicated extraction model** as the fallback. The structured backbone (Phase 1) needs *no* extraction, so a large, correct core exists regardless.
+- **⚠️ Conceptual-tier extraction quality (THE central risk — this is the heart of the graph, not a detail).** Tier 2 (concepts/questions/techniques/directions) is entirely LLM-inferred, so its value = extraction quality. A weak model doesn't just miss things — it **confabulates concepts and relationships**, producing a "ground-truth graph" that is an LLM's guess (the R11/poisoning failure mode at graph scale). This is **framework-independent** — Cognee, LightRAG, Graphiti are all LLM-bound here — so the real lever is the **extraction MODEL + validation**, not the framework. Mitigations: (a) a **strong dedicated extraction model** is likely *required* (gpt-oss-120b @ `reasoning_effort:low` is a real doubt for nuanced conceptual relations — probe it explicitly in Phase 0 on CONCEPTUAL, not just entity, extraction); (b) instructor/BAML typed output; (c) a tight prescribed ontology to constrain what can be created; (d) **provenance on every Tier-2 node** (source doc + model) so the graph is auditable and the grounding oracle can label conceptual context as *inferred*, never assert it as fact; (e) human spot-validation of the conceptual graph before it backs answers. The factual anchor (Tier 1) is deterministic and safe regardless — but the anchor is the *scaffold*, not the point.
+- **gpt-oss structured-output reliability for `cognify`** (weak local models emit malformed JSON). → instructor/BAML; validate in Phase 0/2; dedicated extraction model as the fallback.
 - **Extraction throughput @47 tok/s** (LightRAG flagged the <50 tok/s timeout cliff). → structured-first minimizes extraction; nightly/off-peak; gate list-heavy/code; incremental keeps steady-state cheap.
 - **Cognee API drift** (fast releases). → pin the version; wrap the client behind a thin `qnoe` interface so upgrades are localized.
 - **Vector duplication / embedding-space match.** → share the nomic embedder (serve OAI-compatible, dim 768); namespace `cognee_*`; accept chunk-vs-entity duplication.
