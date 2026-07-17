@@ -23,6 +23,13 @@ import sys
 
 os.environ.setdefault("ENABLE_BACKEND_ACCESS_CONTROL", "false")
 os.environ.setdefault("COGNEE_SKIP_CONNECTION_TEST", "true")  # cognee's 30s test is over-eager
+# cognee 1.4.0 ontology: the RDFLib fuzzy resolver canonicalizes extracted
+# entities/relations onto OUR schema (qnoe_ontology.ttl). No-op on 0.5.6.
+os.environ.setdefault("ONTOLOGY_RESOLVER", "rdflib")
+os.environ.setdefault(
+    "ONTOLOGY_FILE_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "qnoe_ontology.ttl"),
+)
 
 DATA = os.environ.get("COGNEE_DATA", "/home/yzamir/cognee-pilot/data")
 LLM_ENDPOINT = os.environ.get("LLM_ENDPOINT", "http://localhost:8000/v1")
@@ -79,39 +86,65 @@ def configure():
     logger.info("graph_prompt_path -> %s", GRAPH_PROMPT)
 
 
+STRUCT_TYPES = {"DocumentChunk", "TextSummary", "TextDocument", "EntityType", "TextChunk", "NodeSet"}
+STRUCT_RELS = {"contains", "made_from", "is_part_of", "is_a", "exists_in", "has_summary"}
+
+
 async def export_graph(out_prefix: str):
-    """Best-effort dump of nodes+edges for judging (API varies across 0.5.x)."""
+    """Dump a CLEAN ontology graph for judging: entities resolved to their
+    ontology type (via the is_a->EntityType edge), cognee's structural wrapper
+    nodes/edges dropped, only semantic entity->entity edges kept."""
+    from collections import Counter
     from cognee.infrastructure.databases.graph import get_graph_engine
     engine = await get_graph_engine()
     nodes, edges = await engine.get_graph_data()
-    node_rows = []
-    for nid, props in nodes:
-        node_rows.append({"id": str(nid), "name": props.get("name"),
-                          "type": props.get("type"), "description": props.get("description", "")})
-    edge_rows = [{"source": str(s), "target": str(t), "rel": props.get("relationship_name", key)}
-                 for (s, t, key, props) in edges]
+    nprops = {str(nid): props for nid, props in nodes}
+
+    # entity id -> ontology type name, from its is_a edge to an EntityType node
+    ent_type = {}
+    for (s, t, key, props) in edges:
+        if (props.get("relationship_name", key) == "is_a"
+                and nprops.get(str(t), {}).get("type") == "EntityType"):
+            ent_type[str(s)] = (nprops[str(t)].get("name") or "").strip()
+
+    ent = [{"id": str(nid), "name": props.get("name"),
+            "type": ent_type.get(str(nid), "untyped"),
+            "description": props.get("description", "")}
+           for nid, props in nodes if props.get("type") == "Entity"]
+    ent_ids = {n["id"] for n in ent}
+    byname = {n["id"]: n["name"] for n in ent}
+
+    sem = [{"source": str(s), "target": str(t), "rel": props.get("relationship_name", key)}
+           for (s, t, key, props) in edges
+           if props.get("relationship_name", key) not in STRUCT_RELS
+           and str(s) in ent_ids and str(t) in ent_ids]
+
     with open(out_prefix + ".json", "w", encoding="utf-8") as fh:
-        json.dump({"nodes": node_rows, "edges": edge_rows}, fh, ensure_ascii=False, indent=2)
-    # readable markdown
-    lines = [f"# QTOM pilot graph — {len(node_rows)} nodes, {len(edge_rows)} edges\n"]
-    from collections import Counter
-    lines.append("## Node types\n" + ", ".join(f"{k}={v}" for k, v in
-                 Counter(n["type"] for n in node_rows).most_common()) + "\n")
-    lines.append("## Nodes\n")
-    for n in sorted(node_rows, key=lambda x: (x["type"] or "", x["name"] or "")):
-        lines.append(f"- **[{n['type']}] {n['name']}** — {n['description']}")
-    lines.append("\n## Edges\n")
-    byname = {r["id"]: r["name"] for r in node_rows}
-    for e in edge_rows:
+        json.dump({"nodes": ent, "edges": sem}, fh, ensure_ascii=False, indent=2)
+
+    lines = [f"# QTOM pilot graph — {len(ent)} entities, {len(sem)} relations "
+             f"(cognee structural nodes/edges removed)\n"]
+    lines.append("## Node types (our ontology)\n" + ", ".join(
+        f"{k}={v}" for k, v in Counter(n["type"] for n in ent).most_common()) + "\n")
+    lines.append("## Entities by type\n")
+    for typ in sorted(set(n["type"] for n in ent)):
+        lines.append(f"\n### {typ}")
+        for n in sorted([x for x in ent if x["type"] == typ], key=lambda x: x["name"] or ""):
+            lines.append(f"- **{n['name']}** — {n['description']}")
+    lines.append("\n## Relations\n")
+    for e in sem:
         lines.append(f"- {byname.get(e['source'], e['source'])} —{e['rel']}→ {byname.get(e['target'], e['target'])}")
     with open(out_prefix + ".md", "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines))
-    logger.info("exported %d nodes / %d edges → %s.{json,md}", len(node_rows), len(edge_rows), out_prefix)
+    logger.info("exported %d entities / %d relations (clean) → %s.{json,md}", len(ent), len(sem), out_prefix)
 
 
 async def run(args):
     import cognee
     from cognee.shared.data_models import KnowledgeGraph
+    if args.export_only:
+        await export_graph(args.out)
+        return
     if args.prune:
         await cognee.prune.prune_data()
         await cognee.prune.prune_system(metadata=True)
@@ -137,6 +170,7 @@ def main(argv):
     ap.add_argument("--contains", default="", help="only docs whose item_path contains this substring")
     ap.add_argument("--smallest", action="store_true", help="pick the smallest docs (fast smoke)")
     ap.add_argument("--prune", action="store_true")
+    ap.add_argument("--export-only", action="store_true", help="re-export existing graph, no cognify")
     ap.add_argument("--out", default="output/qtm_graph")
     args = ap.parse_args(argv)
     configure()

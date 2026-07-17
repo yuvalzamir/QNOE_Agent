@@ -1,0 +1,59 @@
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix q:    <http://qnoe.icfo.eu/ontology#> .
+
+q: a owl:Ontology ;
+   rdfs:label "QNOE research-program ontology" .
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Node types (owl:Class). Multiple rdfs:label values are synonyms the fuzzy
+# resolver uses to canonicalize the extractor's free-text types onto our schema
+# (e.g. "paper" -> Publication, "instrument" -> Setup).
+# ─────────────────────────────────────────────────────────────────────────────
+q:Concept          a owl:Class ; rdfs:label "Concept", "concept", "idea", "principle" .
+q:Phenomenon       a owl:Class ; rdfs:label "Phenomenon", "phenomenon", "effect", "physical effect" .
+q:Technique        a owl:Class ; rdfs:label "Technique", "technique", "method", "measurement technique" .
+q:Setup            a owl:Class ; rdfs:label "Setup", "setup", "instrument", "apparatus", "rig", "cryostat", "device setup" .
+q:Sample           a owl:Class ; rdfs:label "Sample", "sample", "device", "chip", "specimen" .
+q:Experiment       a owl:Class ; rdfs:label "Experiment", "experiment", "campaign", "measurement" .
+q:Run              a owl:Class ; rdfs:label "Run", "run", "measurement run" .
+q:MeasurementType  a owl:Class ; rdfs:label "MeasurementType", "measurement type", "measurement mode" .
+q:Material         a owl:Class ; rdfs:label "Material", "material", "chemical species", "compound", "substance" .
+q:PhysicalQuantity a owl:Class ; rdfs:label "PhysicalQuantity", "physical quantity", "quantity", "parameter", "observable", "variable" .
+q:ResearchQuestion a owl:Class ; rdfs:label "ResearchQuestion", "research question", "question", "open problem", "research direction" .
+q:Project          a owl:Class ; rdfs:label "Project", "project", "effort", "research project" .
+q:Finding          a owl:Class ; rdfs:label "Finding", "finding", "result", "conclusion", "observation" .
+q:Publication      a owl:Class ; rdfs:label "Publication", "publication", "paper", "article", "manuscript", "journal", "journal article", "journal issue", "report", "thesis" .
+q:Person           a owl:Class ; rdfs:label "Person", "person", "researcher", "author", "scientist", "physicist" .
+q:Subteam          a owl:Class ; rdfs:label "Subteam", "subteam", "team", "group", "organization" .
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Relationships (owl:ObjectProperty) with synonyms.
+# ─────────────────────────────────────────────────────────────────────────────
+q:studies       a owl:ObjectProperty ; rdfs:label "studies", "investigates", "examines" .
+q:uses          a owl:ObjectProperty ; rdfs:label "uses", "employs", "used", "utilizes" .
+q:probes        a owl:ObjectProperty ; rdfs:label "probes", "measures", "probed", "detects" .
+q:measures      a owl:ObjectProperty ; rdfs:label "measures", "measured", "calculated", "computes" .
+q:runs_on       a owl:ObjectProperty ; rdfs:label "runs_on", "runs on", "performed on" .
+q:exhibits      a owl:ObjectProperty ; rdfs:label "exhibits", "shows", "displays", "affected_by", "affected by" .
+q:described_by  a owl:ObjectProperty ; rdfs:label "described_by", "described by", "discussed_in", "discussed in", "explained by" .
+q:related_to    a owl:ObjectProperty ; rdfs:label "related_to", "related to", "associated with", "connected to" .
+q:motivated_by  a owl:ObjectProperty ; rdfs:label "motivated_by", "motivated by", "driven by" .
+q:addresses     a owl:ObjectProperty ; rdfs:label "addresses", "answers", "tackles" .
+q:reports       a owl:ObjectProperty ; rdfs:label "reports", "presents", "demonstrates" .
+q:authored_by   a owl:ObjectProperty ; rdfs:label "authored_by", "authored", "written by", "author", "co-author of" .
+q:cites         a owl:ObjectProperty ; rdfs:label "cites", "cited", "references", "referenced" .
+q:published_in  a owl:ObjectProperty ; rdfs:label "published_in", "published in", "appeared in" .
+q:supports      a owl:ObjectProperty ; rdfs:label "supports", "confirms", "corroborates" .
+q:refutes       a owl:ObjectProperty ; rdfs:label "refutes", "contradicts", "disproves" .
+q:works_on      a owl:ObjectProperty ; rdfs:label "works_on", "works on", "contributes to" .
+q:builds_on     a owl:ObjectProperty ; rdfs:label "builds_on", "builds on", "extends", "based on" .
+q:part_of       a owl:ObjectProperty ; rdfs:label "part_of", "part of", "belongs to", "is_part_of" .
+q:made_of       a owl:ObjectProperty ; rdfs:label "made_of", "made of", "composed of", "consists of" .
+q:measured_on   a owl:ObjectProperty ; rdfs:label "measured_on", "measured on", "taken on" .
+q:performed_by  a owl:ObjectProperty ; rdfs:label "performed_by", "performed by", "conducted by", "carried out by" .
+q:enables       a owl:ObjectProperty ; rdfs:label "enables", "allows", "makes possible" .
+q:member_of     a owl:ObjectProperty ; rdfs:label "member_of", "member of", "part of team" .
+q:owned_by      a owl:ObjectProperty ; rdfs:label "owned_by", "owned by", "belongs to person" .
+q:is_type       a owl:ObjectProperty ; rdfs:label "is_type", "is a", "type of", "is_a" .
