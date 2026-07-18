@@ -2,6 +2,8 @@
 
 *Created 2026-07-16. Owner: (another agent). Author of this spec was focused on the server re-ingest sprint and did NOT implement this.*
 
+> **STATUS: EXECUTED + CLOSED OUT 2026-07-16→18.** Built as `scripts/sharepoint_coverage_audit.py` (+ `--dump-live`), run 3× (initial, task-test, acceptance). Found the noe-group gap (General 53%), forensics via the Jul-8 listing cache, targeted re-ingest (`scripts/sp_manifest_reingest.py`, 1,218 recovered), orphan sweep (`scripts/sp_orphan_sweep.py`, premise reversed: 0 gone, 7,719 pre-exclusion junk rows purged + 230K chunks), and the follow-up "wire into nightly" shipped as `task_sp_coverage`. Full record: [[memory/ingestion]] §SharePoint coverage audit; open user decisions in [[TODO]].
+
 ## Why
 
 The server document corpus was silently ~2/3 unindexed for months ([[memory/mistakes#M58]]). The root lesson was **not** the two CIFS bugs that caused it — it was that **no reconciliation existed** between *what's present* and *what's indexed*. `scripts/coverage_audit.py` fixed that for the CIFS server (per-folder present-vs-indexed, flags <80%).

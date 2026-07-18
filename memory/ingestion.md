@@ -1,5 +1,5 @@
 # Ingestion & RAG Pipeline
-*Last updated: 2026-07-17 (full server re-ingest COMPLETE — 101% coverage, M58 closed; SP coverage audit run — noe-group General at 53%)*
+*Last updated: 2026-07-18 (SP audit closed out: re-ingest +1,218, junk purge −230K chunks, nightly task_sp_coverage live; server re-ingest COMPLETE — 101%, M58 closed)*
 
 > File discovery, chunking, embedding, Qdrant indexing, watcher daemon, QCoDeS scanner.
 > Watcher design: [[WATCHER_PLAN]] · Repo mapping: [[REPO_MAPPING]] · Memory design: [[INFERENCE_MEMORY]]
