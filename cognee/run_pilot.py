@@ -19,12 +19,31 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
+
+# cognee's ingestion auto-fetches any URL found in the text (web_scraper) — an
+# air-gap violation AND a stall (part-number links time out). Strip URLs before
+# feeding cognee so it never reaches the internet.
+_URL_RE = re.compile(r"\b(?:https?://|www\.)\S+", re.IGNORECASE)
+
+
+def _strip_urls(text: str) -> str:
+    return _URL_RE.sub(" ", text or "")
 
 os.environ.setdefault("ENABLE_BACKEND_ACCESS_CONTROL", "false")
 os.environ.setdefault("COGNEE_SKIP_CONNECTION_TEST", "true")  # cognee's 30s test is over-eager
+# THREAD CAPS — critical. Without these, fastembed/onnxruntime spawns a thread
+# per core PER concurrent embed call across cognee's async tasks -> thread
+# oversubscription meltdown (observed: loadavg ~350 on a 20-core box, sshd
+# unresponsive). Cap every math/threadpool lib. (memory: full-ingest lesson.)
+for _tv in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+            "NUMEXPR_NUM_THREADS", "ONNXRUNTIME_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+    os.environ.setdefault(_tv, "4")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 # cognee 1.4.0 ontology: the RDFLib fuzzy resolver canonicalizes extracted
 # entities/relations onto OUR schema (qnoe_ontology.ttl). No-op on 0.5.6.
+os.environ.setdefault("WEB_SCRAPER_TIMEOUT", "2")  # belt: fail fast if any URL slips the strip
 os.environ.setdefault("ONTOLOGY_RESOLVER", "rdflib")
 os.environ.setdefault(
     "ONTOLOGY_FILE_PATH",
@@ -150,11 +169,17 @@ async def run(args):
     docs = [json.loads(l) for l in open(args.docs, encoding="utf-8")]
     if args.contains:
         docs = [d for d in docs if args.contains.lower() in d.get("item_path", "").lower()]
+    if args.max_chars:
+        big = [d for d in docs if d.get("chars", 0) > args.max_chars]
+        docs = [d for d in docs if d.get("chars", 0) <= args.max_chars]
+        if big:
+            logger.info("skipping %d docs > %d chars (process separately): %s",
+                        len(big), args.max_chars, [d["item_path"][:40] for d in big])
     if args.limit:
         docs = sorted(docs, key=lambda d: d["chars"])[: args.limit] if args.smallest else docs[: args.limit]
     logger.info("adding %d docs (dataset=%s)", len(docs), args.dataset)
     for d in docs:
-        await cognee.add(d["text"], dataset_name=args.dataset)
+        await cognee.add(_strip_urls(d["text"]), dataset_name=args.dataset)
     logger.info("cognify (graph_model=KnowledgeGraph, our graph_prompt, effort=%s) …", EFFORT)
     await cognee.cognify(datasets=[args.dataset], graph_model=KnowledgeGraph)
     await export_graph(args.out)
@@ -166,6 +191,7 @@ def main(argv):
     ap.add_argument("--dataset", default="qtom_pilot")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--contains", default="", help="only docs whose item_path contains this substring")
+    ap.add_argument("--max-chars", type=int, default=0, help="skip docs larger than this (0=no cap)")
     ap.add_argument("--smallest", action="store_true", help="pick the smallest docs (fast smoke)")
     ap.add_argument("--prune", action="store_true")
     ap.add_argument("--export-only", action="store_true", help="re-export existing graph, no cognify")
