@@ -60,6 +60,8 @@ TASK_TIMEOUTS = {
     "task_orphan_cleanup":        10 * 60,   # 10 min
     "task_context_blocks":        5 * 60,    #  5 min (pure file reads)
     "task_sp_coverage":           90 * 60,   # 90 min (full Graph listing ~45 min)
+    "task_server_sweep":          3 * 3600,  #  3 h (un-timed /mnt/noe find ~40-60 min + new files)
+    "task_server_coverage":       15 * 60,   # 15 min (reads the find-cache the sweep refreshed)
 }
 _DEFAULT_TASK_TIMEOUT = 3600  # 1 h for any unlisted task
 
@@ -583,6 +585,112 @@ def task_sp_coverage() -> dict:
     }
 
 
+def task_server_sweep() -> dict:
+    """Nightly new-file sweep of the whole server via the broad /mnt/noe mount
+    (M58 standing fix, gap class 1: ACL-denied folders).
+
+    The watcher (server_root /ICFO, yzamir SMB cred) catches changes in
+    yzamir-visible folders near-real-time — but 645+ ACL-denied folders are
+    invisible to it, which is how ~2/3 of the corpus went stale for months
+    (M58). This task re-runs the un-timed find via /mnt/noe (sberlanga cred,
+    broad read), refreshes the find-cache that task_server_coverage reads,
+    and ingests ONLY files with no manifest row (--new-only: one sqlite scan;
+    no CIFS content reads for the ~48K already-indexed files — the default
+    full-hash incremental would re-read the entire corpus nightly).
+    Stored paths are canonical /ICFO (INGEST_READ_ROOT -> INGEST_STORE_ROOT).
+
+    Deliberate scope limits:
+      * Notebook + Personal excluded — Notebook stays /ICFO-scoped (private
+        per-person notebooks, privacy decision 2026-07-16); Personal is not
+        ingested at all.
+      * MODIFICATIONS in ACL-denied folders are not caught (append-mostly
+        corpus; the watcher covers visible folders). task_server_coverage
+        flags any systematic drift this leaves.
+    """
+    import subprocess
+
+    mount_marker = Path(os.environ.get("MNT_NOE_ROOT", "/mnt/noe")) / "Group_Manual.txt"
+    if not mount_marker.exists():
+        raise FileNotFoundError(f"/mnt/noe not mounted (marker missing: {mount_marker})")
+
+    env = {
+        **os.environ,
+        "PYTHONPATH": "/opt/qnoe-agent",
+        "SERVER_ROOT": os.environ.get("MNT_NOE_ROOT", "/mnt/noe"),
+        "INGEST_READ_ROOT": os.environ.get("MNT_NOE_ROOT", "/mnt/noe"),
+        "INGEST_STORE_ROOT": "/ICFO/groups/NOE",
+        "AGENT_DATA_DIR": str(SERVER_DATA_DIR),
+        "EXCLUDE_FOLDERS": os.environ.get("SWEEP_EXCLUDE_FOLDERS", "Notebook,Personal"),
+        "INGEST_SKIP_IF_INDEXED": "1",   # belt on top of --new-only (resume safety)
+        "OMP_NUM_THREADS": "2",          # M58 lesson: thread oversubscription, not
+                                         # worker count, was the sprint bottleneck
+    }
+    cmd = [sys.executable, "-m", "agent.ingest.parallel_server_ingest",
+           "--refresh-find", "--new-only",
+           "--workers", os.environ.get("SWEEP_WORKERS", "2"),
+           "--min-free-gb", os.environ.get("SWEEP_MIN_FREE_GB", "20")]
+    proc = subprocess.run(cmd, capture_output=True, text=True,
+                          timeout=170 * 60, env=env)
+    out = (proc.stdout or "") + (proc.stderr or "")
+    tail = "\n".join(out.strip().splitlines()[-15:])
+    if proc.returncode != 0:
+        raise RuntimeError(f"server sweep rc={proc.returncode}:\n{tail}")
+
+    stats = {"rc": proc.returncode}
+    m = re.search(r"--new-only: (\d+) of (\d+) files have no manifest row", out)
+    if m:
+        stats["new_files"] = int(m.group(1))
+        stats["present_files"] = int(m.group(2))
+    m = re.search(r"progress: (\d+)/(\d+) batches \((\d+) failed\)(?!.*progress:)",
+                  out, re.DOTALL)
+    if m:
+        stats["batches"] = f"{m.group(1)}/{m.group(2)}"
+        stats["batches_failed"] = int(m.group(3))
+        if int(m.group(3)):
+            logger.warning("server sweep: %s failed batch(es) — resumable, "
+                           "will retry next night", m.group(3))
+    logger.info("Server sweep: %s", stats)
+    return stats
+
+
+def task_server_coverage() -> dict:
+    """Server present-vs-indexed coverage audit (standing check, M58 lineage).
+
+    Runs scripts/coverage_audit.py against the find-cache task_server_sweep
+    just refreshed: PRESENT per top-level folder (via /mnt/noe) vs INDEXED
+    manifest rows (canonical /ICFO paths); warns on any folder below
+    MIN_COVERAGE (default 80%) — the reconciliation whose absence let M58
+    hide for months. Runs even if the sweep failed (stale cache is still a
+    meaningful check; the sweep's own failure is surfaced separately).
+    """
+    import subprocess
+
+    cmd = [sys.executable, "/opt/qnoe-agent/scripts/coverage_audit.py", "--json"]
+    cmd += os.environ.get("SERVER_COVERAGE_ARGS", "").split()
+    proc = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=14 * 60,
+        env={**os.environ, "PYTHONPATH": "/opt/qnoe-agent",
+             "SERVER_ROOT": os.environ.get("MNT_NOE_ROOT", "/mnt/noe"),
+             "AGENT_DATA_DIR": str(SERVER_DATA_DIR)},
+    )
+    if not proc.stdout.strip():
+        raise RuntimeError(
+            f"coverage audit produced no output (rc={proc.returncode}): "
+            f"{proc.stderr[-500:]}")
+    res = json.loads(proc.stdout)
+    summary = res.get("summary", "?")
+    if res.get("gapped"):
+        logger.warning("Server coverage: %s", summary)
+    else:
+        logger.info("Server coverage: %s", summary)
+    return {
+        "summary": summary,
+        "gapped_folders": len(res.get("gapped", [])),
+        "total": f"{res.get('total_indexed')}/{res.get('total_present')}",
+        "present_source": res.get("present_source", "?"),
+    }
+
+
 TASKS: list = [
     task_qdrant_snapshot,
     task_index_repos,
@@ -591,6 +699,8 @@ TASKS: list = [
     task_orphan_cleanup,
     task_context_blocks,
     task_sp_coverage,
+    task_server_sweep,
+    task_server_coverage,
 ]
 
 

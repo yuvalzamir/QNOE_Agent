@@ -23,6 +23,7 @@ RUN: bash scripts/run_full_server_ingest.sh   (sets all env)
 import argparse
 import logging
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -96,6 +97,11 @@ def main() -> None:
     ap.add_argument("--min-free-gb", type=float, default=float(os.environ.get("MIN_FREE_GB", "40")),
                     help="do not launch a new batch below this free RAM")
     ap.add_argument("--refresh-find", action="store_true")
+    ap.add_argument("--new-only", action="store_true",
+                    help="drop files that already have a manifest row BEFORE "
+                         "batching (one sqlite scan) — the nightly sweep mode. "
+                         "Without this, skip-if-indexed still dedupes but pays "
+                         "a subprocess spawn + Docling import per ~60 known files.")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--limit", type=int, default=0)
     args = ap.parse_args()
@@ -106,6 +112,16 @@ def main() -> None:
                 SERVER_ROOT, read_root or "(none)", store_root or "(none)", AGENT_DATA_DIR)
 
     files = build_file_list(args.refresh_find)
+    if args.new_only:
+        manifest = os.path.join(AGENT_DATA_DIR, "episodic.db")
+        conn = sqlite3.connect(f"file:{manifest}?mode=ro", uri=True)
+        try:
+            have = {r[0] for r in conn.execute("SELECT file_path FROM index_manifest")}
+        finally:
+            conn.close()
+        before = len(files)
+        files = [p for p in files if _store_key(p) not in have]
+        logger.info("--new-only: %d of %d files have no manifest row", len(files), before)
     if args.limit:
         files = files[:args.limit]
     by_folder = Counter(_folder_of(p) for p in files)
