@@ -179,6 +179,28 @@ def _avail_gb() -> float:
     return 999.0
 
 
+def _start_memory_watchdog(floor_gb: float) -> None:
+    """Intra-batch OOM protection. The between-batch guard cannot catch a
+    STEP-allocation: three kernel OOM kills on 2026-07-20 all hit ~40GB
+    anon-rss, the last going 1.3GB -> 40.8GB in ~60s (8K-token auto
+    chunk_size -> ONNX embedding attention buffers). Exit resumably at the
+    floor instead of letting the kernel pick a victim (llama-server and the
+    gateway share this box)."""
+    import threading
+    import time as _t
+
+    def _watch():
+        while True:
+            avail = _avail_gb()
+            if avail < floor_gb:
+                logger.error("MEMORY WATCHDOG: %.0fGB available < %.0fGB floor — "
+                             "exiting resumably (rc=3)", avail, floor_gb)
+                os._exit(3)
+            _t.sleep(5)
+
+    threading.Thread(target=_watch, daemon=True, name="mem-watchdog").start()
+
+
 async def run(args):
     import cognee
     from cognee.shared.data_models import KnowledgeGraph
@@ -212,6 +234,7 @@ async def run(args):
     bs = args.batch_size
     total = len(docs)
     nbatches = (total + bs - 1) // bs
+    _start_memory_watchdog(max(args.min_free_gb - 6.0, 8.0))
     logger.info("processing %d docs in %d batches of <=%d (dataset prefix=%s, effort=%s)",
                 total, nbatches, bs, args.dataset, EFFORT)
     for bi in range(nbatches):
@@ -238,8 +261,15 @@ async def run(args):
         # Internal concurrency caps (cognee-native, researched 2026-07-20):
         # cognify defaults are data_per_batch=20 / chunks_per_batch=100; the
         # docs' memory-constrained guidance is 2-5 / 10-25.
+        # chunk_size EXPLICIT — cognee's auto value is min(embed_max, llm_max/2)
+        # ≈ 8192 tokens here, and embedding 8K-token chunks through fastembed/
+        # ONNX allocates attention buffers scaling with seq² — the ~40GB
+        # step-balloon behind all three 2026-07-20 kernel OOM kills. 2048 cuts
+        # the quadratic 16× and shrinks extraction prompts 4× (faster, more
+        # convergent medium-effort calls) at the cost of finer-grained chunks.
         await cognee.cognify(
             datasets=[ds], graph_model=KnowledgeGraph,
+            chunk_size=int(os.environ.get("COGNIFY_CHUNK_SIZE", "2048")),
             data_per_batch=int(os.environ.get("COGNIFY_DATA_PER_BATCH", "2")),
             chunks_per_batch=int(os.environ.get("COGNIFY_CHUNKS_PER_BATCH", "10")),
         )
