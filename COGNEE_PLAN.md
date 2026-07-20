@@ -1,6 +1,6 @@
 # Cognee — Corpus Knowledge-Graph Layer (ground truth of group knowledge)
 
-*Created: 2026-07-17. Status: **design/plan — nothing executed**. Critical memory layer.*
+*Created: 2026-07-17. Status (2026-07-20): **Phase-0 pilot stood up on the DGX** (`/home/yzamir/cognee-pilot/`, Cognee 1.4.0 + OWL ontology, repo copy `cognee/`) — small pre-OWL graph produced; full overnight OWL run died 2026-07-18 (~02:54, box overload + embedded-URL fetching); fixes committed (da55efa) but **not yet redeployed/relaunched** — see [[TODO]] Cognee item. Critical memory layer.*
 
 > Related: [[MEMORY_ARCHITECTURE]] (the Cognee+Mem0 boundary this realizes) · [[MEM0_HYGIENE_OPTIONS]] · `CLAUDE.md` §"Memory layers L1–L5" (this is the concrete L5) · [[memory/infrastructure]] (Qdrant, llama.cpp, watcher, nightly)
 
