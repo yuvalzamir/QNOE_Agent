@@ -13,11 +13,23 @@
 
 export LD_LIBRARY_PATH=/opt/qnoe-agent/llamacpp/bin:${LD_LIBRARY_PATH}
 
+# Reasoning effort is baked server-side (llama.cpp ignores per-request
+# reasoning_effort). Default low = the production agent setting. Override for a
+# bounded window (e.g. the Cognee cognify pilot needs high) via the systemd
+# manager env — no file edit, survives nothing, easy to revert:
+#   sudo systemctl set-environment LLAMA_REASONING_EFFORT=high
+#   sudo systemctl restart vllm.service
+#   ... high-effort work ...
+#   sudo systemctl unset-environment LLAMA_REASONING_EFFORT
+#   sudo systemctl restart vllm.service
+# NOTE: while set, ALL traffic (Teams agent included) runs at that effort.
+EFFORT="${LLAMA_REASONING_EFFORT:-low}"
+
 exec /opt/qnoe-agent/llamacpp/bin/llama-server \
   -m /opt/qnoe-agent/models/gpt-oss-120b-gguf/gpt-oss-120b-mxfp4-00001-of-00003.gguf \
   --alias gpt-oss-120b \
   --host 0.0.0.0 --port 8000 \
-  --jinja --chat-template-kwargs '{"reasoning_effort":"low"}' \
+  --jinja --chat-template-kwargs "{\"reasoning_effort\":\"${EFFORT}\"}" \
   -ngl 999 --flash-attn on -ub 2048 \
   --temp 0.2 --top-p 0.9 \
   -c 262144 --parallel 4 \
