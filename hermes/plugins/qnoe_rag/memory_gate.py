@@ -89,8 +89,17 @@ _LAB_VOCAB_RE = re.compile(
 # collective, so first-party MEMBERSHIP ("is a member of the QTM subteam") is
 # NOT dropped.
 _GROUP_SUBJECT_RE = re.compile(
+    # Collective subject: "the group/lab", "another team", or "the <X> team" for
+    # ANY single-word X ("the QTM team", "the superconducting team") — a fixed
+    # sub-team-name list missed live 2026-07-20 ("superconducting" was said, the
+    # list had "superconductivity"). An optional "of the/their (research) group"
+    # tail is allowed before the verb ("the superconducting team of their
+    # research group uses YBCO" — also missed live). The work verb is still
+    # required, so first-party MEMBERSHIP ("is a member of the QTM subteam",
+    # no verb after the collective) is NOT dropped.
     r"\b(the\s+group|the\s+lab|another\s+team|other\s+(?:team|group|people)|"
-    r"the\s+(?:qtm|photocurrent|qed|qsim|superconductivity)\s+(?:team|group|sub-?team))"
+    r"the\s+[\w-]+\s+(?:team|group|sub-?team))"
+    r"(?:\s+of\s+(?:the|their|our)\s+(?:research\s+)?(?:group|lab))?"
     r"\s+(?:members?\s+)?"
     r"(has|have|had|is|are|was|were|ran|runs|running|report\w*|measur\w*|owns?|"
     r"did|does|doing|stud\w+|collect\w*|working|use[sd]?|acquir\w+)\b",

@@ -58,6 +58,13 @@ expect("Where is the BLG cooldown data", "drop")
 # THIRD-PARTY work (a collective, or another person's lab object).
 expect("The group has high-bias photocurrent data on BLG", "drop")
 expect("The QTM team is running cooldowns", "drop")
+# LIVE MISS 2026-07-20 (poisoning probe stored as fact): "superconducting" was
+# not in the fixed team-name list + "of their research group" sat between the
+# collective and the verb. Both the raw utterance and Mem0's rewrapped phrasing.
+expect("The superconducting team of the group uses YBCO", "drop")
+expect("User states that the superconducting team of their research group uses "
+       "YBCO (yttrium barium copper oxide) as their material", "drop")
+expect("The THz team of our lab measures gas laser emission", "drop")
 expect("Peio's sample is BFNB4_D4", "drop")
 expect("Interested in Neha's cavity-QED work", "drop")
 
