@@ -334,6 +334,7 @@ def task_process_change_queue() -> None:
 
     # Process doc files
     processed_ids: list[int] = []
+    done_docs = 0
     if doc_entries:
         # Skip files that aren't readable (CIFS ACL — some lab files are
         # restricted on the Windows share). One unreadable file must NOT abort
@@ -343,36 +344,63 @@ def task_process_change_queue() -> None:
         # traversal (py3.12 propagates EACCES from stat), and os.access() reads
         # mode bits the SMB server may not honour on open. The only reliable
         # test is to actually open the file.
-        doc_paths = []
-        unreadable = []
-        for e in doc_entries:
-            fp = e["file_path"]
-            try:
-                with open(fp, "rb") as fh:
-                    fh.read(1)
-            except FileNotFoundError:
-                continue                 # missing/deleted — skip silently
-            except OSError:
-                unreadable.append(fp)    # permission denied, stale handle, etc.
-                continue
-            doc_paths.append(Path(fp))
-        if unreadable:
-            logger.warning(
-                "Change queue: skipping %d unreadable file(s) (permission denied): %s",
-                len(unreadable), unreadable[:3],
-            )
-        if doc_paths:
-            logger.info("Ingesting %d doc files from change queue", len(doc_paths))
-            ingest_directory(
-                team="group-wide",
-                repo_path=Path("/"),
-                repo_name="server-watcher",
-                force=True,
-                dry_run=False,
-                file_list=doc_paths,
-                manifest_db=str(SERVER_DATA_DIR / "episodic.db"),
-            )
-        processed_ids.extend(e["id"] for e in doc_entries)
+        # CHUNKED + DURABLE + HASH-DEDUPED (2026-07-21, after the first
+        # groundhog-day night): the old shape did ONE ingest_directory call
+        # with force=True over everything and marked processed only at the
+        # END — so when the 1h task alarm fired mid-ingest, a full hour of
+        # re-embedding was done and ZERO entries were dequeued; the next night
+        # redid the same files forever. Made worse by a watcher restart
+        # enqueuing ~110K spurious change events (files unchanged on disk).
+        # Now: chunks of CHANGE_QUEUE_CHUNK entries, mark_processed after each
+        # chunk (durable progress), list_force=False so unchanged files are
+        # skipped by sha256 instead of re-embedded (the hash is the arbiter of
+        # "really changed", not the watcher event), and a soft time budget
+        # that exits cleanly before the task alarm.
+        chunk_n = int(os.environ.get("CHANGE_QUEUE_CHUNK", "300"))
+        budget_s = int(os.environ.get("CHANGE_QUEUE_BUDGET_S", "2700"))
+        t0 = time.time()
+        for ci in range(0, len(doc_entries), chunk_n):
+            if time.time() - t0 > budget_s:
+                logger.warning(
+                    "Change queue: time budget (%ds) reached after %d/%d doc "
+                    "entries — the rest stay queued for the next run",
+                    budget_s, done_docs, len(doc_entries))
+                break
+            chunk = doc_entries[ci:ci + chunk_n]
+            doc_paths = []
+            unreadable = []
+            for e in chunk:
+                fp = e["file_path"]
+                try:
+                    with open(fp, "rb") as fh:
+                        fh.read(1)
+                except FileNotFoundError:
+                    continue                 # missing/deleted — skip silently
+                except OSError:
+                    unreadable.append(fp)    # permission denied, stale handle, etc.
+                    continue
+                doc_paths.append(Path(fp))
+            if unreadable:
+                logger.warning(
+                    "Change queue: skipping %d unreadable file(s) (permission denied): %s",
+                    len(unreadable), unreadable[:3],
+                )
+            if doc_paths:
+                ingest_directory(
+                    team="group-wide",
+                    repo_path=Path("/"),
+                    repo_name="server-watcher",
+                    force=False,
+                    dry_run=False,
+                    file_list=doc_paths,
+                    list_force=False,
+                    manifest_db=str(SERVER_DATA_DIR / "episodic.db"),
+                )
+            chunk_ids = [e["id"] for e in chunk]
+            mark_processed(conn, chunk_ids)
+            done_docs += len(chunk)
+            if (ci // chunk_n) % 10 == 0:
+                logger.info("Change queue: %d/%d doc entries done", done_docs, len(doc_entries))
 
     # Process .db files (same CIFS-safe readability test as docs above)
     if db_entries:
@@ -404,10 +432,12 @@ def task_process_change_queue() -> None:
 
     mark_processed(conn, processed_ids)
     conn.close()
-    logger.info("Change queue: processed %d entries", len(processed_ids))
+    logger.info("Change queue: processed %d entries (%d docs chunked-durable)",
+                len(processed_ids) + done_docs, done_docs)
     return {
-        "total": len(processed_ids),
-        "docs": len(doc_entries),
+        "total": len(processed_ids) + done_docs,
+        "docs": done_docs,
+        "docs_pending": max(len(doc_entries) - done_docs, 0),
         "dbs": len(db_entries),
         "deleted": len(deleted_entries),
     }
@@ -621,6 +651,12 @@ def task_server_sweep() -> dict:
         "INGEST_STORE_ROOT": "/ICFO/groups/NOE",
         "AGENT_DATA_DIR": str(SERVER_DATA_DIR),
         "EXCLUDE_FOLDERS": os.environ.get("SWEEP_EXCLUDE_FOLDERS", "Notebook,Personal"),
+        # Mirror the sprint launcher's extension exclusion (user decision
+        # 2026-07-16: raw-measurement .txt not ingested). Its absence on night
+        # #1 made the fresh find enumerate ~30K .txt files: present-counts
+        # inflated 4-10x (7 false <80% flags) and --new-only queued them all
+        # (the 170-min sweep timeout).
+        "EXCLUDE_EXTENSIONS": os.environ.get("SWEEP_EXCLUDE_EXTENSIONS", ".txt"),
         "INGEST_SKIP_IF_INDEXED": "1",   # belt on top of --new-only (resume safety)
         "OMP_NUM_THREADS": "2",          # M58 lesson: thread oversubscription, not
                                          # worker count, was the sprint bottleneck
