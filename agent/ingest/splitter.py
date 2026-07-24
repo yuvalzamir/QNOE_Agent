@@ -307,6 +307,13 @@ _pdf_converter = None  # None = not yet initialised; False = init failed permane
 def _chunk_pdf_text(text: str, path: Path, repo: str) -> list[dict]:
     """Chunk a PDF text string (already extracted) and tag source as path."""
     import tempfile
+    # PDF extractors emit LONE UTF-16 surrogates from equation glyphs (e.g.
+    # \ud835 = the high half of mathematical-italic letters, U+1D400-1D7FF in
+    # physics papers). A lone surrogate is unencodable: the tempfile write
+    # below raised UnicodeEncodeError and killed the whole batch, every night
+    # (nightly sweep batch_00008, found 2026-07-24 via server_sweep.log).
+    # Drop unpaired surrogates; well-formed text is unaffected.
+    text = text.encode("utf-8", errors="ignore").decode("utf-8", errors="ignore")
     with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8") as f:
         f.write(text)
         tmp = Path(f.name)
